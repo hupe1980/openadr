@@ -7,7 +7,26 @@ that a minor release may break.
 The reasoning behind a change lives in `concepts/DECISIONS.md`, cited here as `D-nnn`. What is not
 built yet lives in `concepts/ROADMAP.md`. Neither belongs on this page.
 
-## [0.3.0] — unreleased
+## [0.3.1] — unreleased
+
+A release-pipeline fix. 0.3.0 shipped without its `aarch64-unknown-linux-musl` binary — the one the
+single-binary site-controller deployment is for — because that job failed.
+
+### Removed
+
+- The `x86_64-apple-darwin` binary. GitHub has retired the Intel macOS runners, so building it would
+  be the release matrix's only cross-compile, and macOS is Apple Silicon now. `cargo install openadr`
+  still builds it from source.
+
+### Fixed
+
+- The `aarch64-unknown-linux-musl` binary builds. `upload-rust-binary-action` reaches for `cross`
+  whenever the target triple differs from the host's, without asking whether only the *libc* differs;
+  cross's last release assumes an x86_64 Linux host, so on the arm64 runner it tried to install an
+  amd64 toolchain and rustup refused. Every target in the matrix is the runner's own architecture and
+  now builds with plain cargo against the musl C compiler `musl-dev` provides.
+
+## [0.3.0] — 2026-09-06
 
 Pre-1.0: this release breaks. There is no migration path and none is needed — the schema is applied
 on connect, and a change to it is a change to the file format.
@@ -97,7 +116,7 @@ on connect, and a change to it is a change to the file format.
   SQLite are vendored C that cargo builds; the property that actually holds — and the one that makes
   cross-compilation ordinary — is that no C *library* has to be installed.
 
-## [0.2.0] — tagged 2026-09-06, never published
+## [0.2.0] — 2026-09-06
 
 ### Security
 
@@ -171,12 +190,13 @@ on connect, and a change to it is a change to the file format.
   D-124.
 - `cargo xtask` exits non-zero on an unrecognised command instead of printing usage and succeeding.
 
-## [0.1.0] — tagged 2026-09-06, never published
+## [0.1.0] — 2026-09-06
 
 Initial implementation: the wire model, the payload schema, the domain core, the VTN server with
 three storage backends, the typed client, the VEN runtime, webhook and MQTT transports, mDNS
 discovery, TLS, and the black-box conformance kit.
 
-[0.3.0]: https://github.com/hupe1980/openadr/compare/v0.2.0...main
+[0.3.1]: https://github.com/hupe1980/openadr/compare/v0.3.0...main
+[0.3.0]: https://github.com/hupe1980/openadr/releases/tag/v0.3.0
 [0.2.0]: https://github.com/hupe1980/openadr/releases/tag/v0.2.0
 [0.1.0]: https://github.com/hupe1980/openadr/releases/tag/v0.1.0

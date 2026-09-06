@@ -111,25 +111,33 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Every target is the runner's own architecture — only the libc differs on Linux — so
+          # nothing here cross-compiles, and `build-tool: cargo` below says so rather than leaving
+          # it to be inferred. Left to itself the upload action reaches for `cross` whenever the
+          # target triple differs from the host's, and cross's last release (0.2.5, 2022) assumes an
+          # x86_64 Linux host: on the arm64 runner it tries to install an amd64 toolchain and rustup
+          # refuses. The fix is not a different runner — this one is already native.
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
-          # Native. `ubuntu-24.04-arm` has been generally available, and free for public
-          # repositories, since August 2025; before it this was a cross-compile on an amd64 runner.
           - target: aarch64-unknown-linux-musl
             os: ubuntu-24.04-arm
-          # `macos-latest` is Apple Silicon.
+          # `macos-latest` is Apple Silicon. Intel macOS is not built: GitHub has retired those
+          # runners, and building it would be the only cross-compile in this matrix.
           - target: aarch64-apple-darwin
-            os: macos-latest
-          # Cross-compiled, and there is no longer an alternative: GitHub has retired the Intel
-          # macOS runners. The C in the tree is vendored source rather than a system library —
-          # `ring`, and SQLite under the `sqlite` feature — and Apple's clang targets both
-          # architectures, so the arm64 runner needs nothing but `rustup target add`.
-          - target: x86_64-apple-darwin
             os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
+
+      # The one thing a musl target needs here that the runner does not already have: a C compiler
+      # for the vendored C in the tree — `ring`, and SQLite under the `sqlite` feature. `musl-tools`
+      # pulls in `musl-dev`, which installs `<arch>-linux-musl-gcc`, and that is the name the `cc`
+      # crate looks for by default. No `CC_*` or linker variable is needed: Rust's musl targets ship
+      # a self-contained musl to link against.
+      - name: musl C compiler
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends musl-tools
 
       # musl static, so the "one binary on a site controller" claim survives contact with whatever
       # libc that controller has. The feature list is what a deployment uses; `conformance` is in it
@@ -138,6 +146,7 @@ jobs:
         with:
           bin: openadr
           target: ${{ matrix.target }}
+          build-tool: cargo
           features: vtn,client,ven,conformance,internal-auth,external-auth,sqlite,postgres,webhook,mqtt,mdns,tls
           archive: openadr-$tag-$target
           checksum: sha256
