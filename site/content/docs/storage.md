@@ -93,6 +93,13 @@ deletions would otherwise be left holding a dispatch instruction for an event th
 with no way to find out. So a `DELETE` reads the objects the cascade is about to take — inside the
 same transaction, and only when something is subscribed — and queues their notifications too.
 
+**One table the cascade cannot reach.** Targets live in a single `object_target` table for every
+kind of object that carries them, which is what makes the object-privacy predicate one join whatever
+it is filtering. The cost of that shape is that it can hold no foreign key, so `ON DELETE CASCADE`
+does not follow into it and each kind of row a cascade removes has to be cleared explicitly. Both SQL
+backends assert the invariant directly — *no target row outlives its object* — because it is
+unobservable through the storage API and so cannot be a conformance behaviour.
+
 Uniqueness constraints: programme name per VTN, VEN name per VTN, resource name per VEN, and one
 `ven` object per `clientID`.
 
@@ -111,6 +118,13 @@ There are none. The project is pre-release and the schema is authoritative rathe
 it is applied on connect, and a change to it is a change to the file format. When the crate reaches
 1.0 that will change; until then, treat a schema change as a reason to recreate the database.
 
+On PostgreSQL the script runs under a transaction-scoped advisory lock, so several instances may
+start at once. `CREATE TABLE IF NOT EXISTS` reads as idempotent and is not: the check and the
+creation are separate steps, so two sessions racing on one table both decide to create it and the
+loser fails — with a message naming an internal catalogue index and no hint of a race. This is the
+backend for a VTN that runs as more than one process, which makes a rolling deploy the normal case
+rather than an edge one.
+
 SQLite is the single-binary deployment: one process, one file. A VEN on the same network can find
 it without being told a URL — see [Finding a local VTN](@/docs/discovery.md).
 
@@ -118,12 +132,14 @@ it without being told a URL — see [Finding a local VTN](@/docs/discovery.md).
 
 A second backend is exactly where a rule quietly diverges: the in-memory one filters with an
 iterator, SQLite with a `WHERE` clause, and nothing forces those to mean the same thing. So the
-behaviour is stated once — 49 functions over `&dyn Storage` — and every backend runs all of them.
+behaviour is stated once — 57 functions over `&dyn Storage` — and every backend runs all of them.
 
 The list is written out explicitly rather than discovered, so adding a behaviour fails to compile
-until every backend runs it.
+until every backend runs it. And `cargo xtask check-suite` fails if a method of the trait has no
+behaviour at all, or if a behaviour is written and left out of the list — the first is a rule the
+backends may quietly differ on, and the second is a test nothing runs.
 
-Three of the 49 exist for methods the OpenADR API never calls. `subscribers()` is the notification
+Three of the 57 exist for methods the OpenADR API never calls. `subscribers()` is the notification
 fan-out's own query: it returns each subscription together with the *kind* of client that created
 it, which is the one thing `GET /subscriptions` has no field for and the fan-out cannot do without.
 The other two are the [subscriber circuit breaker](@/docs/notifications.md) — the counter that
@@ -133,16 +149,19 @@ decides when an endpoint has stopped answering, and the reset behind
 **And a suite bounds only the divergences it names.** It had thirty-five behaviours while one
 backend let any authenticated VEN read every subscription in the VTN, `bearerToken` included,
 because "a VEN sees only its own subscriptions" was not one of the thirty-five. Growing the suite is
-not maintenance; it is the coverage.
+not maintenance; it is the coverage — which is why the count above is checked rather than aspired
+to.
 
-The PostgreSQL run needs a real server and skips unless `OPENADR_TEST_POSTGRES` names one — CI
-provides one, which is what stops "skips locally" from becoming "is never run":
+The PostgreSQL run starts its own container when no server is configured, so an ordinary
+`cargo test` exercises all three backends. `OPENADR_TEST_POSTGRES` points it at one you already
+have, which is what CI does. Each test creates a database of its own — emptying one means
+`TRUNCATE … CASCADE`, and two tests sharing a database deadlock rather than merely interfere:
 
 ```console
 $ docker run -d --rm --name pg -e POSTGRES_PASSWORD=openadr -e POSTGRES_USER=openadr \
       -e POSTGRES_DB=openadr -p 5432:5432 postgres:17-alpine
 $ OPENADR_TEST_POSTGRES=postgres://openadr:openadr@localhost:5432/openadr \
-      cargo test --all-features -- --test-threads=1
+      cargo test --all-features
 ```
 
 Queries are runtime-checked rather than macro-checked, so a clean checkout builds with no database

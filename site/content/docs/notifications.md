@@ -306,7 +306,14 @@ however carefully the broker were configured, which is why even the programme-sc
 business logic's. A VEN reads its own under `mqtt/topics/vens/{venID}/…`, which is what 3.1 added
 them for.
 
-Asking for another VEN's topics answers `404`, not `403`, so ids cannot be enumerated.
+Asking for another VEN's topics answers `404`, not `403`, so ids cannot be enumerated. And the scope
+is checked before the deployment is: a caller that holds neither `read_all` nor `read_bl` is refused
+without learning whether this VTN has a broker at all.
+
+`read_bl` is a permission on those five rows and **not** the business-logic identity, which is a
+distinction worth stating because the name invites the other reading. A credential carrying only
+`read_bl` may list those topics and is an ordinary identified client everywhere else — object
+privacy applies to it in full. See [Authentication](@/docs/authentication.md#scopes).
 
 `mqtt_topic_prefix` is configurable so one broker can serve several VTNs.
 
@@ -318,6 +325,11 @@ that VEN's targets — the same `Access` the read path uses, so the two cannot d
 Which gate applies depends on the object: `program` and `event` copies are filtered by *targeting*;
 `ven`, `resource`, `report` and `subscription` by *ownership*. A report carries no targets at all,
 so evaluating the targeting rule on one would admit every VEN.
+
+The gate also decides what the write has to *look up*. A targeted object can be admitted by any
+VEN's grant, so the snapshot taken before the write is the whole fleet's. An owned one reaches its
+owner and nobody else, so the snapshot is one indexed lookup — which is why `POST /reports`, the
+highest-rate write in the system, costs the same whether the VTN has ten VENs or ten thousand.
 
 The topic a copy is published to comes from the **same function** the discovery endpoints render, so
 a VEN cannot be told to watch a name the VTN never publishes to. That is not a hypothetical: for the

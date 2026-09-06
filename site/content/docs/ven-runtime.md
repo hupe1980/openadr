@@ -113,10 +113,10 @@ them; `active_segments` returns them all, for a VEN that would rather decide for
 ven.wait_for_work().await;
 ```
 
-The next transition, bounded by the poll interval — `time_to_next_wakeup()` is that duration if
-nothing interrupts. Both halves matter: sleeping until the poll interval would act on a 13:00 price
-change at 13:00:59, and sleeping until the next transition alone would never learn about an event
-created in the meantime.
+The next transition, measured to the nanosecond and bounded by the poll interval —
+`time_to_next_wakeup()` is that duration if nothing interrupts. Both halves matter: sleeping until
+the poll interval would act on a 13:00 price change at 13:00:59, and sleeping until the next
+transition alone would never learn about an event created in the meantime.
 
 A [push hint](#push-as-a-hint) is the third thing that can end the wait, and a loop that awaits the
 bare sleep instead simply never notices one.

@@ -7,7 +7,7 @@ use axum::{
 };
 
 use crate::core::IntervalExpander;
-use crate::model::{Event, EventRequest, ObjectType};
+use crate::model::{Duration, Event, EventRequest, IntervalPeriod, ObjectType};
 use crate::schema::PayloadGroup;
 
 use super::super::{ApiError, AppState, auth::Scope, store::EventQuery};
@@ -136,6 +136,7 @@ fn validate_event(state: &AppState, request: &EventRequest) -> Result<(), ApiErr
             check_payloads(state, &interval.payloads, PayloadGroup::Event)?;
         }
     }
+    check_durations_run_forwards(request)?;
     // The sequence rather than one pass: it resolves the implied interval structure as well, so an
     // `intervalPeriod` whose duration cannot be added to its start is caught here too.
     IntervalExpander::at(state.clock.now())
@@ -144,4 +145,51 @@ fn validate_event(state: &AppState, request: &EventRequest) -> Result<(), ApiErr
             ApiError::BadRequest(format!("the event's intervals are not resolvable: {e}"))
         })?;
     Ok(())
+}
+
+/// Refuse an event carrying a duration that runs backwards.
+///
+/// The schema's `duration` pattern begins `^(-?)P`, so `-PT1H` is well formed and the wire model
+/// parses it — deliberately, because a client has to be able to report what a peer sent (see
+/// [`Duration::is_negative`](crate::model::Duration::is_negative)). Nothing OpenADR uses a duration
+/// for has a backwards reading, though, and such an event is *inert*: its active window ends before
+/// it starts, so `?active=true` never returns it and no VEN following the collection ever sees it.
+/// A `201` and a dispatch that never dispatches is the failure this refusal exists to prevent
+/// (D-126).
+fn check_durations_run_forwards(request: &EventRequest) -> Result<(), ApiError> {
+    if request.duration.as_ref().is_some_and(Duration::is_negative) {
+        return Err(backwards("duration"));
+    }
+    check_period(request.interval_period.as_ref(), "intervalPeriod")?;
+    for (index, interval) in request.intervals.iter().flatten().enumerate() {
+        check_period(
+            interval.interval_period.as_ref(),
+            &format!("intervals[{index}].intervalPeriod"),
+        )?;
+    }
+    Ok(())
+}
+
+fn check_period(period: Option<&IntervalPeriod>, field: &str) -> Result<(), ApiError> {
+    let Some(period) = period else {
+        return Ok(());
+    };
+    if period.duration.as_ref().is_some_and(Duration::is_negative) {
+        return Err(backwards(&format!("{field}.duration")));
+    }
+    if period
+        .randomize_start
+        .as_ref()
+        .is_some_and(Duration::is_negative)
+    {
+        return Err(backwards(&format!("{field}.randomizeStart")));
+    }
+    Ok(())
+}
+
+fn backwards(field: &str) -> ApiError {
+    ApiError::BadRequest(format!(
+        "{field} runs backwards; a duration in OpenADR is a length, and an event carrying a \
+         negative one is never active"
+    ))
 }

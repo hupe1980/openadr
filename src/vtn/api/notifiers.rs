@@ -1,7 +1,11 @@
 //! `/notifiers` — push-transport discovery.
 //!
 //! A client asks which notifier bindings the VTN supports, then asks for the topic names it may
-//! subscribe to. The access control on these endpoints is the load-bearing part, and the scopes are
+//! subscribe to. `[Notifiers §8]`: a VTN offering a topic-oriented binding supports *all* of the
+//! topic-name `GET` endpoints, which is why every row of the table below is routed and why
+//! `cargo xtask check-paths` fails if one stops being.
+//!
+//! The access control on these endpoints is the load-bearing part, and the scopes are
 //! taken verbatim from the OpenAPI document's `security` blocks rather than inferred:
 //!
 //! | Endpoint | Scope |
@@ -77,10 +81,12 @@ macro_rules! collection_topics {
             ctx: Ctx,
             headers: HeaderMap,
         ) -> Result<Response, ApiError> {
-            require_mqtt(&state)?;
-            // The scope, not the inferred role: an operator can mint a token that reads objects
-            // without also being able to enumerate broker topics.
+            // Authorization first, and only then configuration. The scope, not the inferred
+            // role: an operator can mint a token that reads objects without also being able to
+            // enumerate broker topics — and a caller that holds neither learns nothing about
+            // whether this deployment has a broker.
             ctx.require($scope)?;
+            require_mqtt(&state)?;
             let t = topics(&state);
             ok(
                 &state,
@@ -135,8 +141,8 @@ pub async fn program_by_id(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    require_mqtt(&state)?;
     ctx.require(Scope::ReadAll)?;
+    require_mqtt(&state)?;
     let id = parse_id(&id)?;
     // Confirm the programme exists, so a caller cannot mint topic names for objects that do not.
     let _ = state.storage.get_program(&id).await?;
@@ -156,8 +162,8 @@ pub async fn program_events(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    require_mqtt(&state)?;
     ctx.require(Scope::ReadAll)?;
+    require_mqtt(&state)?;
     let id = parse_id(&id)?;
     let _ = state.storage.get_program(&id).await?;
     let t = topics(&state);
@@ -175,9 +181,9 @@ pub async fn ven_by_id(
     headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    require_mqtt(&state)?;
     let id = parse_id(&id)?;
     require_own_ven(&state, &ctx, &id).await?;
+    require_mqtt(&state)?;
     let t = topics(&state);
     ok(
         &state,
@@ -198,9 +204,9 @@ macro_rules! ven_scoped_topics {
             headers: HeaderMap,
             Path(id): Path<String>,
         ) -> Result<Response, ApiError> {
-            require_mqtt(&state)?;
             let id = parse_id(&id)?;
             require_own_ven(&state, &ctx, &id).await?;
+            require_mqtt(&state)?;
             let t = topics(&state);
             ok(
                 &state,

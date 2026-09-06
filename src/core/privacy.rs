@@ -9,6 +9,10 @@
 //!   whose grant intersects both the object's targets and the targets it asked for. The response
 //!   shows only the targets the reader asked for — never the object's full set.
 //!
+//! `[Def §program and event objects - targeting]` states the rule for both directions — what a VEN
+//! reading a targeted object may see, and what the VTN evaluates when deciding whether to notify one
+//! — and both directions go through this module for exactly that reason.
+//!
 //! Both halves live in [`Access`]: one type, constructed once per request, consulted by the storage
 //! query *before* pagination and by the handler afterwards for target hiding. Anything that decides
 //! who may see what goes through it, because a rule implemented in three places is a rule with three

@@ -17,7 +17,7 @@ use crate::schema::PayloadGroup;
 
 use super::super::{ApiError, AppState, auth::Scope, store::VenQuery};
 use super::{
-    Ctx, JsonBody, check_attributes, created, fanout, ok, params, parse_id, require_owner,
+    Ctx, JsonBody, check_attributes, created, fanout_owned, ok, params, parse_id, require_owner,
 };
 
 /// `GET /vens`
@@ -51,8 +51,10 @@ pub async fn create(
     let request: VenRequest = body.parse()?;
     check_attributes(&state, request.attributes(), PayloadGroup::VenAttribute)?;
     let now = state.clock.now();
-    let fanout = fanout(&state, ObjectType::Ven).await;
+    // Built before the snapshot, because the snapshot is keyed on the object's owner. Neither
+    // touches storage, and the write still follows both.
     let ven = build(&ctx, request, now, None)?;
+    let fanout = fanout_owned(&state, ObjectType::Ven, Some(&ven.client_id)).await;
     let ven = state.storage.create_ven(ven, &fanout).await?;
     created(&ven)
 }
@@ -95,8 +97,8 @@ pub async fn update(
 
     let request: VenRequest = body.parse()?;
     check_attributes(&state, request.attributes(), PayloadGroup::VenAttribute)?;
-    let fanout = fanout(&state, ObjectType::Ven).await;
     let ven = build(&ctx, request, state.clock.now(), Some(&existing))?;
+    let fanout = fanout_owned(&state, ObjectType::Ven, Some(&ven.client_id)).await;
     let ven = state.storage.update_ven(&id, ven, &fanout).await?;
     ok(&state, &HeaderMap::new(), &ven)
 }
@@ -109,7 +111,6 @@ pub async fn delete(
 ) -> Result<Response, ApiError> {
     ctx.require(Scope::WriteVens)?;
     let id = parse_id(&id)?;
-    let fanout = fanout(&state, ObjectType::Ven).await;
     let existing = state.storage.get_ven(&id).await?;
     require_owner(
         &ctx.owned_id_access(),
@@ -117,6 +118,7 @@ pub async fn delete(
         ObjectType::Ven,
         &id,
     )?;
+    let fanout = fanout_owned(&state, ObjectType::Ven, Some(&existing.client_id)).await;
     let ven = state.storage.delete_ven(&id, &fanout).await?;
     ok(&state, &HeaderMap::new(), &ven)
 }

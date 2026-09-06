@@ -25,13 +25,17 @@ and a set of scopes — and nothing else in the VTN knows how that happened.
 ## Scopes
 
 The specification never labels a token "business logic" or "VEN". The distinction falls out of the
-scopes, and this crate treats any of `read_all`, `read_bl`, `write_programs` or `write_events` as
-business logic.
+scopes, and this crate treats any of `read_all`, `write_programs` or `write_events` as business
+logic.
+
+`read_bl` is deliberately **not** in that list, despite the name. It is a permission on five
+endpoints — the collection-wide MQTT topic listings — and a token carrying only it is an ordinary
+identified client everywhere else, with object privacy applying in full.
 
 | Scope | Grants |
 |---|---|
 | `read_all` | Unrestricted read; also the MQTT programme topic endpoints |
-| `read_bl` | The collection-wide MQTT topic endpoints |
+| `read_bl` | The collection-wide MQTT topic endpoints, and only those |
 | `read_targets` | Reading targeted programmes and events, by naming matching targets |
 | `read_ven_objects` | Reading one's own `ven`, `resource`, `report`, `subscription` objects |
 | `write_programs`, `write_events` | Business logic |

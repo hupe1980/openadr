@@ -211,7 +211,7 @@ specification requires:
 
 ```json
 {
-  "type": "https://openadr.dev/problems/missing-scope",
+  "type": "https://hupe1980.github.io/openadr/problems/missing-scope",
   "title": "Forbidden",
   "status": 403,
   "detail": "the write_events scope is required",
@@ -219,8 +219,9 @@ specification requires:
 }
 ```
 
-`instance` is the request id, and it is also the `X-Request-Id` header on the same response and the
-`request_id` field on the tracing span. So a client quoting an error and an operator searching the
+Each `type` resolves to [its entry in the registry](@/docs/problems.md), which is what a client
+should match on. `instance` is the request id, and it is also the `X-Request-Id` header on the same
+response and the `request_id` field on the tracing span. So a client quoting an error and an operator searching the
 log are quoting the same string. An id supplied by an upstream proxy is kept rather than replaced.
 
 One mapping is worth knowing: **an object you may not see returns `404`, never `403`**. A `403`

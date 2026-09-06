@@ -1,14 +1,19 @@
 //! The MQTT publisher, over a real socket, against a real broker.
 //!
-//! The broker is fifty lines of MQTT 3.1.1 at the bottom of this file rather than a container or a
-//! dependency, because the thing under test is what the VTN puts on the wire: which topics it
-//! publishes to, and what each copy contains. A mock notifier proves neither — the fan-out was
-//! computed correctly and published nowhere for as long as this crate has had topic endpoints.
+//! The broker is at the bottom of this file rather than in a container, because the thing under test
+//! is what the VTN puts on the wire: which topics it publishes to, and what each copy contains. A
+//! mock notifier proves neither — the fan-out was computed correctly and published nowhere for as
+//! long as this crate has had topic endpoints.
 //!
-//! The assertion that matters is the last one. An event targeted at `group1` must reach `ven-a`'s
-//! private topic carrying only `group1`, and must not appear on `ven-b`'s at all. That is a
-//! competitor's dispatch schedule, and it is the claim other implementations' conformance suites
-//! skip.
+//! Two claims carry the file, one per privacy gate.
+//!
+//! * **Targeting.** An event targeted at `group1` must reach `ven-a`'s private topic carrying only
+//!   `group1`, and must not appear on `ven-b`'s at all. That is a competitor's dispatch schedule,
+//!   and it is the claim other implementations' conformance suites skip.
+//! * **Ownership.** A report, and a resource, must reach their owner's topic and no other VEN's.
+//!   That half also holds the *narrowed* fan-out snapshot in place: an owned write no longer sweeps
+//!   the fleet to address one topic, and a snapshot narrowed to the wrong VEN would compute the
+//!   same fan-out and publish it nowhere (D-124).
 
 #![cfg(all(feature = "vtn", feature = "mqtt"))]
 
@@ -34,6 +39,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tower::ServiceExt;
 
 const BL: &str = "bl-secret";
+/// A VEN credential, so a report can be filed by the client that owns it.
+const VEN_A: &str = "ven-a-secret";
 const PREFIX: &str = "openadr3";
 
 fn now() -> Timestamp {
@@ -135,6 +142,120 @@ async fn a_targeted_event_reaches_only_the_entitled_vens_private_topic() {
     // because a retained delete on a per-VEN topic outlives the grant that put it there.
     assert_eq!(to_a.qos, 1);
     assert!(!to_a.retain);
+}
+
+/// A report reaches its owner's private topic, and nobody else's.
+///
+/// The claim is object privacy on the push path for an *owned* object, and it is asserted over the
+/// wire because that is the only place it is true or false. It also guards the narrowed fan-out
+/// snapshot: `POST /reports` is the highest-rate write in the system, and it no longer sweeps every
+/// VEN's grant to publish to one topic (D-124). A snapshot narrowed to the wrong VEN, or to none,
+/// would compute the same fan-out and publish it nowhere — which is exactly the failure D-056
+/// exists for and exactly what a mock notifier cannot see.
+#[tokio::test]
+async fn a_report_reaches_only_its_owners_private_topic() {
+    let broker = Broker::start().await;
+    let (vtn, router) = vtn_with(&broker);
+
+    let program_id = post(&router, "/programs", json!({ "programName": "tou" })).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let mut ven_ids = Vec::new();
+    for (client, name) in [("client-a", "ven-a"), ("client-b", "ven-b")] {
+        let ven = post(
+            &router,
+            "/vens",
+            json!({
+                "objectType": "BL_VEN_REQUEST",
+                "clientID": client,
+                "venName": name,
+            }),
+        )
+        .await;
+        ven_ids.push(ven["id"].as_str().unwrap().to_string());
+    }
+    let (ven_a, ven_b) = (&ven_ids[0], &ven_ids[1]);
+
+    let event_id = post(
+        &router,
+        "/events",
+        json!({
+            "programID": program_id,
+            "intervalPeriod": { "start": "2026-02-11T12:00:00Z", "duration": "PT15M" },
+            "intervals": [
+                { "id": 0, "payloads": [{ "type": "IMPORT_CAPACITY_LIMIT", "values": [60] }] }
+            ]
+        }),
+    )
+    .await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    // Filed by the VEN that owns it, which is the only way a report acquires a `clientID`.
+    post_as(
+        &router,
+        VEN_A,
+        "/reports",
+        json!({
+            "programID": program_id,
+            "eventID": event_id,
+            "clientName": "ven-a",
+            "resources": [{
+                "resourceName": "meter",
+                "intervals": [{ "id": 0, "payloads": [{ "type": "USAGE", "values": [1.5] }] }],
+            }],
+        }),
+    )
+    .await;
+    vtn.dispatcher().drain().await;
+
+    let topics: Vec<String> = broker.published().into_iter().map(|p| p.topic).collect();
+    let a_topic = format!("{PREFIX}/reports/vens/{ven_a}/create");
+    let b_topic = format!("{PREFIX}/reports/vens/{ven_b}/create");
+    assert!(
+        topics.contains(&a_topic),
+        "the report never reached its owner's topic ({a_topic}); published: {topics:?}"
+    );
+    assert!(
+        !topics.contains(&b_topic),
+        "ven-b received ven-a's meter data: {topics:?}"
+    );
+    // And the topic the VTN published to is the one it tells that VEN to watch.
+    let advertised = get(
+        &router,
+        &format!("/notifiers/mqtt/topics/vens/{ven_a}/reports"),
+    )
+    .await;
+    assert_eq!(
+        advertised["topics"]["CREATE"].as_str(),
+        Some(a_topic.as_str())
+    );
+
+    // A resource is the same gate reached the long way round: it is owned through its VEN rather
+    // than by naming a client, so its snapshot resolves the parent. That extra lookup is the one
+    // place the owned fan-out can silently come back empty, and an empty one publishes nowhere.
+    post_as(
+        &router,
+        VEN_A,
+        "/resources",
+        json!({ "objectType": "VEN_RESOURCE_REQUEST", "resourceName": "meter-1" }),
+    )
+    .await;
+    vtn.dispatcher().drain().await;
+
+    let topics: Vec<String> = broker.published().into_iter().map(|p| p.topic).collect();
+    let resource_topic = format!("{PREFIX}/resources/vens/{ven_a}/create");
+    assert!(
+        topics.contains(&resource_topic),
+        "the resource never reached its VEN's topic ({resource_topic}); published: {topics:?}"
+    );
+    assert!(
+        !topics.contains(&format!("{PREFIX}/resources/vens/{ven_b}/create")),
+        "ven-b was told about ven-a's resource: {topics:?}"
+    );
 }
 
 #[tokio::test]
@@ -475,7 +596,8 @@ fn vtn_with(broker: &Broker) -> (Vtn, Router) {
         .storage(MemoryStorage::shared())
         .authenticator(Arc::new(
             StaticTokenAuth::new("http://vtn.test/auth/token")
-                .with_business_logic(BL, ClientId::new("bl").unwrap()),
+                .with_business_logic(BL, ClientId::new("bl").unwrap())
+                .with_ven(VEN_A, ClientId::new("client-a").unwrap()),
         ))
         .clock(Arc::new(FixedClock::new(now())))
         .config(VtnConfig {
@@ -523,13 +645,17 @@ async fn get(router: &Router, path: &str) -> Value {
 }
 
 async fn post(router: &Router, path: &str, body: Value) -> Value {
+    post_as(router, BL, path, body).await
+}
+
+async fn post_as(router: &Router, token: &str, path: &str, body: Value) -> Value {
     let response = router
         .clone()
         .oneshot(
             Request::builder()
                 .method(Method::POST)
                 .uri(format!("/openadr3/3.1.0{path}"))
-                .header(header::AUTHORIZATION, format!("Bearer {BL}"))
+                .header(header::AUTHORIZATION, format!("Bearer {token}"))
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(serde_json::to_vec(&body).unwrap()))
                 .unwrap(),
@@ -545,11 +671,18 @@ async fn post(router: &Router, path: &str, body: Value) -> Value {
     value
 }
 
-/// A minimal MQTT 3.1.1 broker: enough to accept a connection and acknowledge QoS 1 publishes.
+/// A minimal MQTT 3.1.1 broker: `CONNECT`, `SUBSCRIBE`, `PUBLISH` at QoS 1, and `PINGREQ`.
 ///
-/// It records what it received. It does not route to subscribers, because nothing here subscribes —
-/// the question is what the VTN publishes and where, and a broker that answers `CONNACK` and
-/// `PUBACK` is enough to ask it. Fifty lines of packet framing beats a container in CI.
+/// It records what it received *and routes it*, matching each publish against every subscriber's
+/// filters. The routing is not a nicety: a broker that only acknowledges can say what the VTN
+/// published, and cannot say whether the topic a VEN was told to watch is the topic the VTN
+/// publishes to. That pair was computed in two places and came out different — `vens/{venID}`
+/// against `vens/vens/{venID}` — so every VEN subscribed correctly, received nothing for ever, and
+/// no error was raised anywhere (D-084).
+///
+/// A container would answer the same questions. This is a few hundred lines of packet framing that
+/// starts in a millisecond and needs no Docker, and `tests/broker.rs` runs the same claims against a
+/// real EMQX from `deploy/compose.yaml` for the ones a toy cannot settle — an ACL that refuses.
 struct Broker {
     addr: std::net::SocketAddr,
     received: Arc<Mutex<Vec<Published>>>,

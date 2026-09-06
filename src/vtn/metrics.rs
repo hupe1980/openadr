@@ -300,7 +300,15 @@ impl Metrics {
 
 /// Escape a label value per the exposition format.
 fn escape(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
+    // All three the exposition format defines, in the one order that works: the backslash first, or
+    // the escapes this adds would themselves be escaped. A newline cannot reach here today — every
+    // label value is a matched route, an HTTP method or one of this module's own constants — and
+    // handling it is what keeps that a fact about the callers rather than a load-bearing assumption
+    // in a function that formats untrusted-looking strings.
+    value
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
 }
 
 /// Time every request and file it under its *matched* route.

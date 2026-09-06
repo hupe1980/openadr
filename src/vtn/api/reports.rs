@@ -14,7 +14,9 @@ use crate::model::{ClientName, ObjectType, ReportRequest};
 use crate::schema::PayloadGroup;
 
 use super::super::{ApiError, AppState, auth::Scope, store::ReportQuery};
-use super::{Ctx, JsonBody, check_payloads, created, fanout, ok, params, parse_id, require_owner};
+use super::{
+    Ctx, JsonBody, check_payloads, created, fanout_owned, ok, params, parse_id, require_owner,
+};
 
 /// `GET /reports`
 pub async fn list(
@@ -55,7 +57,7 @@ pub async fn create(
     check_report_payloads(&state, &request)?;
     // The VTN stamps the identity; a client cannot claim someone else's.
     let owner = ctx.client_id()?.clone();
-    let fanout = fanout(&state, ObjectType::Report).await;
+    let fanout = fanout_owned(&state, ObjectType::Report, Some(&owner)).await;
     let report = state
         .storage
         .create_report(request, Some(owner), state.clock.now(), &fanout)
@@ -107,7 +109,7 @@ pub async fn update(
     // The same check `create` makes. A `PUT` that skipped it was a way round `Policy::Strict`:
     // post an empty report, then replace it with the payloads the policy refuses.
     check_report_payloads(&state, &request)?;
-    let fanout = fanout(&state, ObjectType::Report).await;
+    let fanout = fanout_owned(&state, ObjectType::Report, existing.client_id.as_ref()).await;
     let report = state
         .storage
         .update_report(&id, request, state.clock.now(), &fanout)
@@ -123,7 +125,6 @@ pub async fn delete(
 ) -> Result<Response, ApiError> {
     ctx.require(Scope::WriteReports)?;
     let id = parse_id(&id)?;
-    let fanout = fanout(&state, ObjectType::Report).await;
     let existing = state.storage.get_report(&id).await?;
     require_owner(
         &ctx.owned_id_access(),
@@ -131,6 +132,9 @@ pub async fn delete(
         ObjectType::Report,
         &id,
     )?;
+    // After the read, because the snapshot is keyed on the object's owner — and still before the
+    // write, which is the only ordering the transactional outbox requires.
+    let fanout = fanout_owned(&state, ObjectType::Report, existing.client_id.as_ref()).await;
     let report = state.storage.delete_report(&id, &fanout).await?;
     ok(&state, &HeaderMap::new(), &report)
 }

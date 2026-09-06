@@ -159,6 +159,12 @@ pub struct ClientBuilder<R> {
 impl<R: Role> ClientBuilder<R> {
     /// Provide credentials. Without them the client sends unauthenticated requests, which is what a
     /// public tariff server expects.
+    ///
+    /// `[Def §VEN enrollment]` names the three things a VEN must let an end user configure — the
+    /// VTN URL, the `clientID` and the `clientSecret` — and they are the three arguments of
+    /// [`Client::builder`] and this method. Nothing here is compiled in or read from a fixed path,
+    /// which is what makes reconfiguration the caller's to expose rather than this crate's to
+    /// prevent.
     pub fn credentials(mut self, credentials: Credentials) -> Self {
         self.credentials = Some(credentials);
         self
@@ -766,9 +772,9 @@ impl Query {
 
     /// Look a programme up by name.
     ///
-    /// Not in the specification — proposed as oadr3-org/specification#418 and already served by
-    /// public price servers, where finding one tariff among hundreds otherwise means paging the
-    /// whole collection.
+    /// Not declared by `openadr3.yaml`. Finding one tariff among hundreds otherwise means paging
+    /// the whole collection, so this crate's VTN accepts it; another VTN may not, and answers as it
+    /// would to any unknown query parameter.
     pub fn program_name(mut self, name: &crate::model::ProgramName) -> Self {
         self.pairs.push(("programName".into(), name.to_string()));
         self

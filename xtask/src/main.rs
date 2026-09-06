@@ -12,6 +12,7 @@
 //! payload type, or a tightened bound, would simply never be enforced. `check-drift` runs in CI.
 
 use std::{
+    collections::BTreeSet,
     fmt::Write as _,
     fs,
     path::{Path, PathBuf},
@@ -23,10 +24,17 @@ use serde_yaml_ng::Value;
 
 mod model;
 mod paths;
+mod trace;
 
 const SPEC_REPO: &str = "https://github.com/grid-coordination/openadr3-specification";
 const TABLE_PATH: &str = "src/schema/table.rs";
 const OPENAPI_PATH: &str = "src/vtn/openapi.json";
+/// The published registry every `problem.type` URI resolves to.
+const PROBLEMS_PATH: &str = "site/content/docs/problems.md";
+/// The `Storage` trait, whose every method the shared suite must exercise.
+const STORAGE_PATH: &str = "src/vtn/store/mod.rs";
+/// The suite that exercises it.
+const SUITE_PATH: &str = "src/vtn/store/suite.rs";
 const LIB_PATH: &str = "src/lib.rs";
 
 fn main() -> Result<()> {
@@ -45,16 +53,29 @@ fn main() -> Result<()> {
         "check-drift" => check_drift(),
         "check-model" => check_model(),
         "check-paths" => check_paths(),
-        _ => {
-            println!(
+        "check-problems" => check_problems(),
+        "check-suite" => check_suite(),
+        "trace" => trace::run(&spec_dir(), &spec_version()?, &root().join("src")),
+        other => {
+            let usage = format!(
                 "cargo xtask <command>\n\n\
-                 spec-sync     fetch the specification mirror into specs/\n\
-                 codegen       regenerate {TABLE_PATH} from the enumeration schemas\n\
-                 check-drift   fail if {TABLE_PATH} is out of date\n\
-                 check-model   fail if the wire model no longer matches openadr3.yaml\n\
-                 check-paths   fail if the VTN's routes or scopes no longer match openadr3.yaml"
+                 spec-sync       fetch the specification mirror into specs/\n\
+                 codegen         regenerate {TABLE_PATH} from the enumeration schemas\n\n\
+                 check-drift     fail if {TABLE_PATH} is out of date\n\
+                 check-model     fail if the wire model no longer matches openadr3.yaml\n\
+                 check-paths     fail if the VTN's routes or scopes no longer match openadr3.yaml\n\
+                 check-problems  fail if a problem.type URI resolves to nothing\n\
+                 check-suite     fail if a Storage method or a written behaviour goes unexercised\n\
+                 trace           fail if a MUST or SHALL sits in a section nothing cites"
             );
-            Ok(())
+            // A misspelled check that exits 0 is a check nobody notices is gone — which is how
+            // `check-links`, a command that never existed, spent a while being reported as passing.
+            if other == "help" || other == "--help" || other == "-h" {
+                println!("{usage}");
+                Ok(())
+            } else {
+                bail!("unknown command `{other}`\n\n{usage}")
+            }
         }
     }
 }
@@ -235,6 +256,138 @@ fn check_model() -> Result<()> {
 /// a table describing it, because a table is a second copy of the routing rules.
 fn check_paths() -> Result<()> {
     paths::check(&read_spec()?)
+}
+
+/// Every `problem.type` this crate can mint resolves to documentation of that type.
+///
+/// RFC 9457 §3.1.1 asks for that, and the docs claim it. It held only as long as somebody
+/// remembered to add a page whenever a slug was added — so this compares the two lists instead.
+/// The crate side is [`openadr::model::problem::PROBLEM_TYPES`]; the published side is the
+/// `aliases` array in the registry page, which is what Zola turns into the resolving URLs.
+fn check_problems() -> Result<()> {
+    let page = fs::read_to_string(root().join(PROBLEMS_PATH))
+        .with_context(|| format!("reading {PROBLEMS_PATH}"))?;
+    let front = page
+        .split("+++")
+        .nth(1)
+        .context("the registry page has no TOML front matter")?;
+    let aliases = front
+        .split_once("aliases = [")
+        .context("the registry page declares no aliases, so no problem type URI resolves")?
+        .1
+        .split_once(']')
+        .context("the aliases array is not closed")?
+        .0;
+
+    let published: BTreeSet<&str> = aliases
+        .split(',')
+        .filter_map(|line| line.trim().trim_matches('"').rsplit('/').next())
+        .filter(|slug| !slug.is_empty())
+        .collect();
+    let minted: BTreeSet<&str> = openadr::model::problem::PROBLEM_TYPES
+        .iter()
+        .copied()
+        .collect();
+
+    let unpublished: Vec<&&str> = minted.difference(&published).collect();
+    let orphaned: Vec<&&str> = published.difference(&minted).collect();
+    if !unpublished.is_empty() || !orphaned.is_empty() {
+        let mut message = String::from("the problem type registry no longer matches the code:\n");
+        for slug in unpublished {
+            message.push_str(&format!(
+                "  - {slug} is minted but has no alias in {PROBLEMS_PATH}, so its type URI 404s\n"
+            ));
+        }
+        for slug in orphaned {
+            message.push_str(&format!(
+                "  - {slug} is published but nothing mints it any more\n"
+            ));
+        }
+        bail!(message);
+    }
+
+    println!("all {} problem type URIs resolve", minted.len());
+    Ok(())
+}
+
+/// Every `Storage` method has a behaviour, and every behaviour written is a behaviour run.
+///
+/// The suite is the only thing keeping three backends interchangeable (D-032), so "a behaviour it
+/// does not name is a behaviour they may differ on" (D-054) is the governing rule. Two directions,
+/// because it can rot either way: a trait method nothing in `suite.rs` calls is one the backends may
+/// disagree about, and a `pub async fn` the `run_suite!` list does not name is a behaviour nothing
+/// runs (D-129).
+///
+/// Textual rather than semantic, which is enough because both files are written in one shape: the
+/// trait is a flat list of `async fn`, and the suite calls each method as `.name(`.
+fn check_suite() -> Result<()> {
+    let trait_source = fs::read_to_string(root().join(STORAGE_PATH))
+        .with_context(|| format!("reading {STORAGE_PATH}"))?;
+    let suite = fs::read_to_string(root().join(SUITE_PATH))
+        .with_context(|| format!("reading {SUITE_PATH}"))?;
+
+    // The trait body, so a helper defined beside it is not mistaken for a method.
+    let body = trait_source
+        .split_once("pub trait Storage")
+        .context("src/vtn/store/mod.rs declares no `pub trait Storage`")?
+        .1;
+    let methods: BTreeSet<&str> = body
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("async fn "))
+        .filter_map(|rest| rest.split(['(', '<']).next())
+        .filter(|name| !name.is_empty())
+        .collect();
+    if methods.is_empty() {
+        bail!("no methods found on `Storage`; the parser and the trait have diverged");
+    }
+
+    let unexercised: Vec<&&str> = methods
+        .iter()
+        .filter(|name| !suite.contains(&format!(".{name}(")))
+        .collect();
+
+    // Every behaviour the suite defines, against the list the backends actually run.
+    //
+    // A *behaviour* takes the backend and returns nothing: it asserts. A `pub async fn` that
+    // returns something is a shared *fixture* — `seed_a_cascade_of_targeted_children` builds the
+    // state the SQL backends' own orphan check inspects — and belongs to its caller rather than to
+    // the list. Told apart by the signature rather than by a naming convention, because a
+    // convention is one more thing to remember and this is the file whose whole point is not
+    // relying on that.
+    let defined: BTreeSet<&str> = suite
+        .lines()
+        .filter_map(|line| line.strip_prefix("pub async fn "))
+        .filter(|rest| !rest.contains("->"))
+        .filter_map(|rest| rest.split('(').next())
+        .collect();
+    let listed: BTreeSet<&str> = suite
+        .match_indices("check!(")
+        .filter_map(|(at, _)| suite[at + "check!(".len()..].split(')').next())
+        .collect();
+    let unrun: Vec<&&str> = defined.difference(&listed).collect();
+
+    if !unexercised.is_empty() || !unrun.is_empty() {
+        let mut message = String::from("the storage conformance suite has gaps:\n");
+        for name in unexercised {
+            message.push_str(&format!(
+                "  - Storage::{name} is never called by {SUITE_PATH}, so the backends may differ \
+                 about it\n"
+            ));
+        }
+        for name in unrun {
+            message.push_str(&format!(
+                "  - {name} is written but not in the `run_suite!` list, so no backend runs it\n"
+            ));
+        }
+        bail!(message);
+    }
+
+    println!(
+        "all {} Storage methods are exercised by {} behaviours, and every behaviour runs",
+        methods.len(),
+        listed.len()
+    );
+    Ok(())
 }
 
 /// The OpenAPI document for the version the crate declares.
@@ -577,6 +730,27 @@ mod tests {
         assert_eq!(
             kinds_expr(&["Boolean", "Integer", "Number", "Point", "String"]),
             "ValueKinds::ANY"
+        );
+    }
+
+    /// The check runs against the real files, which is the only version of it worth having.
+    ///
+    /// A parser that silently found nothing would report success on an empty set — the shape D-120
+    /// found in this same file — so this asserts the check *passes* and, separately, that it had
+    /// something to look at.
+    #[test]
+    fn the_storage_suite_check_reads_the_real_files() {
+        check_suite().expect("the storage suite should exercise the whole trait");
+
+        let trait_source = fs::read_to_string(root().join(STORAGE_PATH)).unwrap();
+        let body = trait_source.split_once("pub trait Storage").unwrap().1;
+        let methods = body
+            .lines()
+            .filter(|line| line.trim().starts_with("async fn "))
+            .count();
+        assert!(
+            methods > 30,
+            "the trait parser found only {methods} methods; it and the trait have diverged"
         );
     }
 

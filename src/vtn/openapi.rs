@@ -140,9 +140,8 @@ fn topic_operation(summary: &str) -> serde_json::Value {
 
 /// `?programName=` on `/programs`, which the document does not declare.
 ///
-/// Proposed upstream as oadr3-org/specification#418. Finding one tariff among hundreds otherwise
-/// means paging the whole collection, so this VTN accepts it — and says so here rather than leaving
-/// it to be discovered.
+/// Finding one tariff among hundreds otherwise means paging the whole collection, so this VTN
+/// accepts it — and says so here, marked as an extension, rather than leaving it to be discovered.
 fn add_program_name_parameter(paths: &mut serde_json::Map<String, serde_json::Value>) {
     let Some(parameters) = paths
         .get_mut("/programs")
@@ -158,7 +157,7 @@ fn add_program_name_parameter(paths: &mut serde_json::Map<String, serde_json::Va
             "name": "programName",
             "in": "query",
             "required": false,
-            "x-openadr-extension": "oadr3-org/specification#418",
+            "x-openadr-extension": "not declared by openadr3.yaml; see the VTN's spec notes",
             "schema": { "$ref": "#/components/schemas/programName" },
         }),
     );

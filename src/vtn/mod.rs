@@ -100,7 +100,8 @@ pub struct VtnConfig {
     pub http_caching: bool,
     /// Whether `GET /programs?programName=` is accepted.
     ///
-    /// Not in the specification; proposed as oadr3-org/specification#418.
+    /// Not declared by `openadr3.yaml`; served as an extension, and described as one in
+    /// `GET /openapi.json`.
     pub program_name_lookup: bool,
     /// Largest request body accepted, in bytes.
     ///
@@ -676,17 +677,11 @@ impl Vtn {
             scheme = "http",
             "VTN listening"
         );
-        let dispatcher = self.dispatcher.clone().spawn();
-        let sweeper = self.retention.clone().spawn();
+        let background = self.spawn_background();
         let result = axum::serve(listener, self.router())
             .with_graceful_shutdown(shutdown_signal())
             .await;
-        // Whatever is still queued stays queued: it is durable, and the next process to start will
-        // pick it up. Aborting beats waiting on a delivery to a dead endpoint during shutdown.
-        dispatcher.abort();
-        if let Some(sweeper) = sweeper {
-            sweeper.abort();
-        }
+        background.abort();
         result
     }
 
@@ -715,10 +710,44 @@ impl Vtn {
             client_certificates = config.asks_for_client_certificates(),
             "VTN listening"
         );
-        let dispatcher = self.dispatcher.clone().spawn();
+        let background = self.spawn_background();
         let result = tls::serve(listener, self.router(), server_config, shutdown_signal()).await;
-        dispatcher.abort();
+        background.abort();
         result
+    }
+
+    /// Start everything that runs beside the router, and hand back one handle for all of it.
+    ///
+    /// One function rather than a line in each `serve`, because the two lists drifted: the TLS
+    /// listener span<!-- -->ed the dispatcher and not the retention sweeper, so a VTN configured to age
+    /// reports out and served over TLS simply never did — silently, and on precisely the deployment
+    /// that needs it most. `--tls-cert` is for the site controller with no room for a reverse proxy,
+    /// which is also the one whose SQLite file has nowhere to grow (D-128).
+    fn spawn_background(&self) -> Background {
+        Background {
+            dispatcher: self.dispatcher.clone().spawn(),
+            sweeper: self.retention.clone().spawn(),
+        }
+    }
+}
+
+/// The tasks that run beside the router, stopped together.
+struct Background {
+    dispatcher: tokio::task::JoinHandle<()>,
+    /// `None` when retention is off, which is the default.
+    sweeper: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Background {
+    /// Stop both.
+    ///
+    /// Whatever is still queued stays queued: it is durable, and the next process to start picks it
+    /// up. Aborting beats waiting on a delivery to a dead endpoint during shutdown.
+    fn abort(self) {
+        self.dispatcher.abort();
+        if let Some(sweeper) = self.sweeper {
+            sweeper.abort();
+        }
     }
 }
 

@@ -727,12 +727,19 @@ impl<M: Meter> VenRuntime<M> {
     ///
     /// Bounded by the poll interval rather than by the next change alone, because a VEN that slept
     /// until its own next transition would never learn about an event created in the meantime.
+    ///
+    /// Measured to the nanosecond, not to the second. Truncating both instants to whole seconds
+    /// before subtracting gets the answer wrong in both directions and neither is benign: a
+    /// transition 1 ms away rounds to a wait of zero, and the loop then spins through real HTTP
+    /// syncs until the second turns over; a transition 999 ms away also rounds to a whole second,
+    /// and the VEN curtails a second late. Both are invisible in a test whose fixtures land on
+    /// whole seconds, which is every fixture in this crate (D-122).
     pub fn time_to_next_wakeup(&self) -> StdDuration {
         let now = self.clock.now();
-        let until_change = self
-            .next_change(now)
-            .map(|t| (t.as_second() - now.as_second()).max(0) as u64)
-            .map(StdDuration::from_secs);
+        let until_change = self.next_change(now).map(|t| {
+            let nanos = (t.as_nanosecond() - now.as_nanosecond()).max(0);
+            StdDuration::from_nanos(u64::try_from(nanos).unwrap_or(u64::MAX))
+        });
         match until_change {
             Some(d) => d.min(self.config.poll_interval),
             None => self.config.poll_interval,
@@ -1126,6 +1133,62 @@ mod tests {
             .build()
             .unwrap();
         VenRuntime::new(client, VenConfig::new("ven-1".parse().unwrap()))
+    }
+
+    /// A VEN wakes *at* the transition, not at the second boundary nearest it.
+    ///
+    /// Every fixture in this crate lands on a whole second, which is exactly why the arithmetic
+    /// went unexamined: truncating both instants before subtracting is invisible until an event
+    /// does not. It is wrong in both directions and neither is benign — a transition 1 ms away
+    /// rounds to a wait of zero and the loop spins through real syncs until the second turns over,
+    /// and one 999 ms away rounds to a full second late (D-122).
+    #[test]
+    fn the_wait_is_measured_to_the_transition_not_to_the_second() {
+        use crate::core::FixedClock;
+        use crate::model::{EventRequest, IntervalPeriod, ObjectType, StartTime, Value, ValuesMap};
+
+        // `now` and the transition are inside the same second, in that order.
+        let now: Timestamp = "2026-02-11T06:00:00.100Z".parse().unwrap();
+        let starts_at: Timestamp = "2026-02-11T06:00:00.900Z".parse().unwrap();
+
+        let mut content = EventRequest::new("prg-1".parse().unwrap());
+        content.interval_period = Some(IntervalPeriod::new(
+            StartTime::At(starts_at),
+            "PT1H".parse().unwrap(),
+        ));
+        content.intervals = Some(crate::std_shim::vec![Interval::new(
+            0,
+            crate::std_shim::vec![ValuesMap::single(
+                "PRICE".parse().unwrap(),
+                Value::Integer(1)
+            )],
+        )]);
+        let event = Event {
+            id: "evt-1".parse().unwrap(),
+            created_date_time: now,
+            modification_date_time: now,
+            object_type: ObjectType::Event,
+            content,
+        };
+
+        let ven = runtime().with_clock(Arc::new(FixedClock::new(now)));
+        {
+            let mut inner = ven.write();
+            inner.events.insert(event.id.clone(), event);
+            inner.rebuild_timelines(now, ven.config.poll_interval);
+        }
+
+        assert_eq!(
+            ven.next_change(now),
+            Some(starts_at),
+            "the transition should be the interval's start"
+        );
+        assert_eq!(
+            ven.time_to_next_wakeup(),
+            StdDuration::from_millis(800),
+            "a sub-second transition became a wait of zero, which is a spin, or of a whole \
+             second, which is late"
+        );
     }
 
     #[tokio::test]

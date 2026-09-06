@@ -197,6 +197,19 @@ impl Duration {
         matches!(self, Duration::Forever)
     }
 
+    /// Whether this duration runs backwards.
+    ///
+    /// The schema's pattern begins `^(-?)P`, so a negative duration is *well formed* and meaningless
+    /// everywhere OpenADR puts one — the sign is an artefact of a generic ISO 8601 regex. The wire
+    /// model therefore parses one, so a client can say what it received, and the VTN refuses it at
+    /// the boundary, where a rule about meaning belongs (D-126).
+    pub fn is_negative(&self) -> bool {
+        match self {
+            Duration::Forever => false,
+            Duration::Finite(s) => s.is_negative(),
+        }
+    }
+
     /// Whether this is a zero-length span (used to cancel an event, User Guide §7.9).
     pub fn is_zero(&self) -> bool {
         match self {
@@ -629,7 +642,14 @@ mod tests {
         assert!("PT15M".parse::<Duration>().is_ok());
         assert!("P1DT2H3M4.5S".parse::<Duration>().is_ok());
         assert!("P2W".parse::<Duration>().is_ok());
-        assert!("-PT1H".parse::<Duration>().is_ok());
+        // The pattern begins `^(-?)P`, so this is well formed and parses. What it is not is
+        // *meaningful*, which is a question for whoever is being asked to act on it: the VTN
+        // refuses an event carrying one (D-126).
+        let backwards: Duration = "-PT1H".parse().unwrap();
+        assert!(backwards.is_negative());
+        assert!(!"PT1H".parse::<Duration>().unwrap().is_negative());
+        assert!(!"PT0S".parse::<Duration>().unwrap().is_negative());
+        assert!(!"P9999Y".parse::<Duration>().unwrap().is_negative());
 
         // Fractional hours/minutes are outside the schema pattern.
         assert!("PT1.5H".parse::<Duration>().is_err());

@@ -6,6 +6,15 @@
 //! disagreement shows up as a VEN that cannot connect to the broker its own VTN published to.
 //!
 //! So it is written once, here, and neither side parses a URL.
+//!
+//! **Versions.** `[Def §MQTT]`, `[Notifiers §11.2]` and `[Notifiers §22.9]` all say the same thing:
+//! 3.1.1 or later is required, 5.0 or later is recommended. `rumqttc`'s default client speaks
+//! 3.1.1, which is the required one; 5.0 is the recommendation and is not implemented (ROADMAP
+//! B-14).
+//!
+//! **Transport.** `[Def §MQTT]` also says clients use MQTT over TLS to reach the VTN's broker. The
+//! scheme decides that here and a typo is refused by name rather than quietly defaulted to
+//! plaintext, which is the one failure mode a `mqtts`-vs-`mqtt` slip has.
 
 use crate::std_shim::{String, ToString, format};
 use std::time::Duration;

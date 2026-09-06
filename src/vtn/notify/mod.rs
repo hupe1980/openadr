@@ -468,6 +468,15 @@ impl Fanout {
 
 /// Which subscriptions want a change, and what each of them is allowed to see.
 ///
+/// `[Def §Subscriptions]`: the VTN makes a request to the callback URL when the subscription's
+/// conditions are met. This decides *which* callbacks those are; the request itself is the
+/// dispatcher's, one transaction later (D-038).
+///
+/// Stage 3 is the notification half of `[Def §program and event objects - targeting]`. The clause
+/// evaluates the rule against the `clientID` behind the subscription, which is why a subscription
+/// carries its owner and its owner's *kind* (D-095) — the dispatcher has no credential to ask
+/// later.
+///
 /// Filtering happens in three stages, all of which must pass:
 ///
 /// 1. the subscription's `objectOperations` must name this object type and this operation;

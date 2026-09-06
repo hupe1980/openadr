@@ -169,6 +169,10 @@ correctness property, not a performance one:
 consulting `Access`, so a caller cannot accidentally apply the targeting rule to a `report` — which
 carries no targets at all, and would therefore be admitted to everybody.
 
+The same choice decides what a write reads before it can announce itself. A targeted object may be
+admitted by any VEN's grant, so the snapshot taken before the write covers the fleet; an owned one
+reaches its owner and nobody else, so it is one indexed lookup.
+
 ## Verifying it
 
 Three kinds of test, because the failure is silent and examples alone would not find it.
@@ -177,7 +181,7 @@ Three kinds of test, because the failure is silent and examples alone would not 
 of the request, of the object and of the grant; a VEN never out-sees business logic; visibility is
 monotone in the grant.
 
-**A conformance suite** of 52 behaviours runs against all three storage backends, so a rule cannot
+**A conformance suite** of 57 behaviours runs against all three storage backends, so a rule cannot
 mean one thing in memory and another in SQL.
 
 **End-to-end HTTP tests** drive the real router: a VEN in `group1` reading an event targeted at
@@ -186,7 +190,8 @@ them; a partly-granted request still fills the first page.
 
 **A test against a real broker.** An event targeted at `group1` is published, over a socket, and the
 assertion is on the topics it reached: `group1`'s VEN got a copy carrying only `group1`, and
-`group2`'s VEN topic is empty. A mock notifier proves neither half — the fan-out was computed
+`group2`'s VEN topic is empty. A report gets the same treatment from the other gate — it reaches its
+owner's topic and no other VEN's. A mock notifier proves neither half — the fan-out was computed
 correctly and published nowhere for as long as this crate had topic endpoints and no publisher.
 
 ## MQTT: both halves

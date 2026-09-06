@@ -11,9 +11,9 @@
 use std::sync::Arc;
 
 use openadr::vtn::{
-    Vtn, VtnConfig,
+    RetentionConfig, Vtn, VtnConfig,
     auth::StaticTokenAuth,
-    store::MemoryStorage,
+    store::{MemoryStorage, SharedStorage},
     tls::{TlsConfig, TlsError},
 };
 
@@ -63,19 +63,24 @@ impl Authority {
 
 /// Start a VTN over TLS and return its base URL.
 async fn serve(tls: TlsConfig) -> String {
+    serve_with(tls, MemoryStorage::shared(), VtnConfig::default()).await
+}
+
+/// The same, over a store and a configuration the caller chose.
+async fn serve_with(tls: TlsConfig, storage: SharedStorage, config: VtnConfig) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     drop(listener);
 
     let vtn = Vtn::builder()
-        .storage(MemoryStorage::shared())
+        .storage(storage)
         .authenticator(Arc::new(
             StaticTokenAuth::new("https://vtn.test/auth/token")
                 .with_business_logic(BL, "bl".parse().unwrap()),
         ))
         .config(VtnConfig {
             base_path: "/openadr3/3.1.0".into(),
-            ..Default::default()
+            ..config
         })
         .build();
 
@@ -218,4 +223,90 @@ async fn a_certificate_and_a_key_that_do_not_match_are_refused_before_the_port_o
         matches!(&e, TlsError::Config(m) if m.contains("refused")),
         "{e}"
     );
+}
+
+/// The TLS listener starts everything the plain one does.
+///
+/// The two `serve` methods each had their own list of background tasks, and the lists drifted: the
+/// TLS one spawned the dispatcher and not the retention sweeper. A VTN configured to age reports out
+/// and served over TLS therefore never did — silently, with `GET /health` reporting a report count
+/// that only ever grew. That is the wrong deployment to lose it on: `--tls-cert` exists for the site
+/// controller with no room for a reverse proxy, which is also the one whose SQLite file has nowhere
+/// to grow (D-128).
+///
+/// Asserted through the sweeper because that is the task that was missing. The dispatcher is
+/// asserted by every other socket test in the repository.
+#[tokio::test]
+async fn the_tls_listener_runs_the_background_tasks_too() {
+    use openadr::model::{ClientName, ProgramRequest, ReportRequest};
+    use openadr::vtn::notify::Fanout;
+
+    let storage = MemoryStorage::shared();
+    let program = storage
+        .create_program(
+            ProgramRequest::new("tou".parse().unwrap()),
+            old(),
+            &Fanout::none(),
+        )
+        .await
+        .unwrap();
+    let event = storage
+        .create_event(
+            openadr::model::EventRequest::new(program.id.clone()),
+            old(),
+            &Fanout::none(),
+        )
+        .await
+        .unwrap();
+    storage
+        .create_report(
+            ReportRequest::new(event.id, ClientName::new("ven-1").unwrap(), Vec::new()),
+            Some("client-1".parse().unwrap()),
+            old(),
+            &Fanout::none(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(count(&storage).await, 1, "the fixture did not land");
+
+    let ca = Authority::new("openadr test CA");
+    let (certificate, key) = ca.issue(vec!["localhost".into()]);
+    let _base = serve_with(
+        TlsConfig::from_pem(certificate.as_bytes(), key.as_bytes()).unwrap(),
+        storage.clone(),
+        VtnConfig {
+            // The sweep runs once on start-up and then on the interval, so the interval only has to
+            // be long enough not to run twice.
+            retention: RetentionConfig {
+                reports: Some(std::time::Duration::from_secs(60)),
+                interval: std::time::Duration::from_secs(3600),
+                batch: 100,
+            },
+            ..Default::default()
+        },
+    )
+    .await;
+
+    // Waited for rather than slept on: the sweeper runs on start-up, and a sleep long enough to be
+    // reliable is also long enough to hide one that ran late.
+    for _ in 0..200 {
+        if count(&storage).await == 0 {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("the retention sweeper never ran under the TLS listener");
+}
+
+/// An instant far enough in the past that any retention period has passed.
+fn old() -> openadr::model::Timestamp {
+    "2020-01-01T00:00:00Z".parse().unwrap()
+}
+
+async fn count(storage: &SharedStorage) -> u64 {
+    storage
+        .report_stats(openadr::model::Timestamp::now())
+        .await
+        .unwrap()
+        .count
 }

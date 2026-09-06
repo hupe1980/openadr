@@ -32,18 +32,18 @@ mistaken for a bug.
 | Conformance kit — black-box, 48 clause-citing checks, runs against any VTN | `conformance` | Built; one reading against another implementation |
 | External auth — end-to-end against a real Keycloak: realm, client-credentials grant, token, write | `external-auth` | Complete |
 
-**449 tests**: 271 unit, 68 driving the real HTTP router, 17 property tests, 14 running the
+**466 tests**: 277 unit, 70 driving the real HTTP router, 17 property tests, 14 running the
 conformance suite, 12 running the client against a real VTN over TCP, 12 running the VEN runtime
-against one, 11 delivering webhooks over real sockets, 11 in the CLI, 10 doctests, 7 validating JWTs
-against a real JWKS, 4 completing real TLS handshakes, 4 against a real MQTT broker that routes, one
-against a real Keycloak end to end, one mDNS round trip over a real multicast group, and six over the code generator in `xtask`. Three of the
-unit tests are the storage conformance suite, which is 52 behaviours run against each backend —
-PostgreSQL included, which starts its own container when no server is configured rather than
-skipping.
+against one, 11 delivering webhooks over real sockets, 11 in the CLI, 10 doctests, 8 validating JWTs
+against a real JWKS, 12 over the code generator and the drift checks in `xtask`, 5 publishing to a broker over a
+real socket, 5 completing real TLS handshakes, one against a real Keycloak end to end, and one mDNS round
+trip over a real multicast group. Three of the unit tests are the storage conformance suite, which
+is 57 behaviours run against each backend — PostgreSQL included, which starts its own container when
+no server is configured rather than skipping.
 
 Three more are `#[ignore]`d, because they measure rather than assert: `load` (write latency, broker
-fan-out, drain rate, report ingest), `interop` (this suite against another VTN) and `broker` (object
-privacy across a real EMQX, from `deploy/compose.yaml`).
+fan-out, drain rate, report ingest with and without a broker behind it), `interop` (this suite
+against another VTN) and `broker` (object privacy across a real EMQX, from `deploy/compose.yaml`).
 
 `cargo test` with nothing configured starts its own PostgreSQL and Keycloak containers; both skip,
 loudly, on a machine with no Docker.
@@ -55,6 +55,21 @@ wire-model check *and* the OpenAPI copy against `openadr3.yaml`; `cargo deny` ov
 licences, banned crates and registries, with a CycloneDX SBOM published per build. The PostgreSQL
 suite runs against a real server in CI, which is what stops "skips locally" from becoming "is never
 run".
+
+Three further guards check claims this project makes about *itself*: that every `problem.type` URI it
+mints resolves, that the storage suite calls every method of the storage trait and runs every
+behaviour written for it, and the traceability below.
+
+## Traceability
+
+`cargo xtask trace` extracts every `MUST`, `MUST NOT`, `SHALL` and `SHALL NOT` from the Definitions
+and the notifier binding document and matches each against the clause citations in the source:
+**34 of 34**, nothing exempted. `SHOULD` and `MAY` are excluded — counting recommendations would make
+the number an opinion.
+
+That proves no requirement sits in the specification with nothing in the code near it. It does not
+prove a citation is honest: a citation is a claim, and the evidence for a claim is a test. Resolving
+each requirement to a conformance check is the half still open.
 
 ## What it does not do
 

@@ -730,11 +730,15 @@ impl Storage for SqliteStorage {
         } else {
             Self::cascaded_from_program(&mut tx, object_id).await?
         };
-        // Events and reports go with it by cascade; their target rows are not reachable from a
-        // cascade, so they are cleared here.
+        // Events, reports and programme-scoped subscriptions go with it by cascade. `object_target`
+        // is polymorphic and so has no foreign key to be cascaded *through*, which means every kind
+        // of row a cascade removes has to be cleared here by hand — reports carry no targets, but
+        // events and subscriptions both do, and the subscriptions were missed for as long as this
+        // function existed (D-123).
         sqlx::query(
             "DELETE FROM object_target WHERE object_id IN \
-             (SELECT id FROM event WHERE program_id = ?1)",
+             (SELECT id FROM event WHERE program_id = ?1 \
+              UNION ALL SELECT id FROM subscription WHERE program_id = ?1)",
         )
         .bind(object_id.as_str())
         .execute(&mut *tx)
@@ -2287,4 +2291,45 @@ mod tests {
         let path = dir.join("openadr.sqlite");
         SqliteStorage::shared(path.to_str().unwrap()).await.unwrap()
     });
+
+    async fn fresh() -> SqliteStorage {
+        let dir = std::env::temp_dir().join(format!(
+            "openadr-orphans-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        SqliteStorage::open(dir.join("openadr.sqlite").to_str().unwrap())
+            .await
+            .unwrap()
+    }
+
+    /// A cascade leaves no target rows behind.
+    ///
+    /// `object_target` is polymorphic, so it carries no foreign key and a cascade cannot reach it:
+    /// every kind of row a cascade removes has to be cleared by hand, and the programme-scoped
+    /// subscriptions were not (D-123). Nothing in the storage suite can see this — the rows are
+    /// unreachable through the trait, and identifiers are never reused, so the leak is silent
+    /// growth rather than a wrong answer. Which is exactly why it needs asserting somewhere.
+    #[tokio::test]
+    async fn deleting_a_programme_leaves_no_orphaned_target_rows() {
+        let store = fresh().await;
+        let program_id = super::super::suite::seed_a_cascade_of_targeted_children(&store).await;
+        store
+            .delete_program(&program_id, &Fanout::none())
+            .await
+            .unwrap();
+
+        let orphans: i64 = sqlx::query_scalar(super::super::suite::ORPHANED_TARGETS)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            orphans, 0,
+            "a programme's cascade left {orphans} target rows pointing at objects that are gone"
+        );
+    }
 }

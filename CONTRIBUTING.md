@@ -24,22 +24,27 @@ implementation, in containers it starts itself.
 ## Building and testing
 
 ```console
-$ cargo test --all-features
-$ cargo clippy --all-features --all-targets -- -D warnings
+$ cargo test --workspace --all-features
+$ cargo clippy --workspace --all-features --all-targets -- -D warnings
 $ cargo fmt --all
 $ cargo xtask check-drift          # fails if the Alliance's payload enumerations changed
 $ cargo xtask check-model          # fails if the wire model and openadr3.yaml disagree
 $ cargo xtask check-paths          # fails if a declared endpoint is unrouted or wrongly scoped
+$ cargo xtask check-problems       # fails if a problem.type URI would resolve to nothing
+$ cargo xtask check-suite          # fails if a Storage method or a written behaviour goes unrun
+$ cargo xtask trace                # fails if a MUST or SHALL sits in a section nothing cites
 ```
 
-The PostgreSQL storage tests skip unless a server is configured, and a skipped backend is an
-untested backend:
+The PostgreSQL storage tests start their own container when no server is configured, so an ordinary
+`cargo test` exercises all three backends. `OPENADR_TEST_POSTGRES` points them at one you already
+have, which is what CI does. Each test creates a database of its own, so they may run in parallel
+like everything else:
 
 ```console
 $ docker run -d --rm --name pg -e POSTGRES_PASSWORD=openadr -e POSTGRES_USER=openadr \
       -e POSTGRES_DB=openadr -p 5432:5432 postgres:17-alpine
 $ OPENADR_TEST_POSTGRES=postgres://openadr:openadr@localhost:5432/openadr \
-      cargo test --all-features -- --test-threads=1
+      cargo test --all-features
 ```
 
 ```console
@@ -56,7 +61,8 @@ here. Some tests and the payload-table generator need it.
 
 ## Cutting a release
 
-A tag, and nothing else:
+Move the unreleased section of [CHANGELOG.md](CHANGELOG.md) under its version, bump
+`workspace.package.version`, then tag:
 
 ```console
 $ git tag v0.2.0 && git push origin v0.2.0

@@ -82,8 +82,14 @@ pub struct MqttNotifierBinding {
 
 /// Response of `GET /notifiers`.
 ///
-/// `WEBHOOK` is required to be `true` by the specification; it exists so that a future revision can
-/// make webhooks optional without changing the discovery shape.
+/// `[Def §Information Model]` and `[Notifiers §notifiersResponse]` require `WEBHOOK` to be `true`;
+/// the key exists so a future revision can make webhooks optional without changing the discovery
+/// shape. This VTN reports whether a transport is actually installed, which is a documented
+/// departure — a `true` a subscriber cannot rely on costs it real notifications.
+///
+/// `[Notifiers §12]` is the other requirement here: the binding tells a client the authentication
+/// method and what it needs to connect, which is [`MqttAuthentication`] — including the certificate,
+/// key and CA that `[Notifiers §12.3]` requires of a VTN offering mTLS.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NotifiersResponse {
     /// Whether webhook subscriptions are available. Must be `true`.

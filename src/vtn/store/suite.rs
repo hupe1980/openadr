@@ -57,6 +57,33 @@ fn ven(client: &str, name: &str, targets: &[&str]) -> Ven {
     }
 }
 
+fn resource(ven_id: &ObjectId, name: &str, targets: &[&str]) -> crate::model::Resource {
+    crate::model::Resource {
+        id: oid("pending"),
+        created_date_time: now(),
+        modification_date_time: now(),
+        object_type: ObjectType::Resource,
+        resource_name: ResourceName::new(name).unwrap(),
+        ven_id: ven_id.clone(),
+        targets: targets.iter().map(|t| target(t)).collect(),
+        attributes: None,
+    }
+}
+
+fn watching(client: &str, object_type: ObjectType, callback_url: &str) -> SubscriptionRequest {
+    SubscriptionRequest {
+        client_name: ClientName::new(client).unwrap(),
+        program_id: None,
+        object_operations: vec![ObjectOperation {
+            objects: vec![object_type],
+            operations: vec![Operation::Create],
+            callback_url: callback_url.into(),
+            bearer_token: None,
+        }],
+        targets: Vec::new(),
+    }
+}
+
 fn ven_role(client: &str, grants: &[&str]) -> Role {
     Role::Ven {
         client_id: ClientId::new(client).unwrap(),
@@ -649,6 +676,330 @@ pub async fn a_resource_is_owned_through_its_ven(s: &dyn Storage) {
     assert_eq!(s.list_resources(&query(bl())).await.unwrap().len(), 2);
 }
 
+/// A VEN is findable by the client that owns it, and an unknown client owns none.
+///
+/// The one query the notification fan-out narrows itself with: an owned object reaches its owner's
+/// VEN topic and no other, so this lookup decides which topic that is (D-124). It had no behaviour
+/// in this suite at all, which meant the three backends could have disagreed about it — including
+/// about the *absent* case, where the choice is between `None` and an error and only one of them is
+/// "this client has no VEN yet", which is an ordinary state during enrolment.
+pub async fn a_ven_is_found_by_the_client_that_owns_it(s: &dyn Storage) {
+    let created = s
+        .create_ven(ven("c1", "ven-a", &["group1"]), &Fanout::none())
+        .await
+        .unwrap();
+    s.create_ven(ven("c2", "ven-b", &[]), &Fanout::none())
+        .await
+        .unwrap();
+
+    let found = s
+        .get_ven_by_client(&ClientId::new("c1").unwrap())
+        .await
+        .unwrap()
+        .expect("c1 owns a VEN");
+    assert_eq!(found.id, created.id);
+    assert_eq!(found.ven_name.as_str(), "ven-a");
+    assert_eq!(found.targets, vec![target("group1")], "the whole object");
+
+    // Absent is `Ok(None)`, not an error: a client that has not enrolled yet is a state, not a
+    // failure, and the fan-out reads it on every owned write.
+    assert!(
+        s.get_ven_by_client(&ClientId::new("nobody").unwrap())
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// Every collection's `update` keeps the object's identity and replaces its content.
+///
+/// Four of the six object types had no update behaviour here at all, so the SQL backends' update
+/// paths for `ven`, `resource`, `report` and `subscription` were exercised only through the HTTP
+/// tests — which run against the in-memory backend (D-129). The rule is the same for all of them:
+/// the id and `createdDateTime` survive, `modificationDateTime` moves, and the content is the new
+/// content rather than a merge of the two.
+pub async fn an_update_keeps_the_identity_and_replaces_the_content(s: &dyn Storage) {
+    // -- ven
+    let v = s
+        .create_ven(ven("c1", "ven-a", &["group1"]), &Fanout::none())
+        .await
+        .unwrap();
+    let mut renamed = ven("c1", "ven-renamed", &["group2"]);
+    renamed.id = v.id.clone();
+    renamed.created_date_time = v.created_date_time;
+    renamed.modification_date_time = later();
+    let updated = s.update_ven(&v.id, renamed, &Fanout::none()).await.unwrap();
+    assert_eq!(updated.id, v.id);
+    assert_eq!(updated.created_date_time, v.created_date_time);
+    assert_eq!(updated.modification_date_time, later());
+    assert_eq!(updated.ven_name.as_str(), "ven-renamed");
+    assert_eq!(updated.targets, vec![target("group2")], "targets replaced");
+    // And the store agrees on a re-read, which is what distinguishes a write from a return value.
+    let read = s.get_ven(&v.id).await.unwrap();
+    assert_eq!(read.ven_name.as_str(), "ven-renamed");
+    assert_eq!(read.targets, vec![target("group2")]);
+    // The new name is the one the index answers to, and the old one is gone.
+    assert!(
+        s.get_ven_by_client(&ClientId::new("c1").unwrap())
+            .await
+            .unwrap()
+            .is_some_and(|found| found.ven_name.as_str() == "ven-renamed")
+    );
+
+    // -- resource
+    let r = s
+        .create_resource(resource(&v.id, "meter", &["group1"]), &Fanout::none())
+        .await
+        .unwrap();
+    let mut moved = resource(&v.id, "meter-2", &[]);
+    moved.id = r.id.clone();
+    moved.created_date_time = r.created_date_time;
+    moved.modification_date_time = later();
+    let updated = s
+        .update_resource(&r.id, moved, &Fanout::none())
+        .await
+        .unwrap();
+    assert_eq!(updated.id, r.id);
+    assert_eq!(updated.created_date_time, r.created_date_time);
+    assert_eq!(updated.resource_name.as_str(), "meter-2");
+    assert!(updated.targets.is_empty(), "targets replaced, not merged");
+    assert_eq!(
+        s.get_resource(&r.id).await.unwrap().resource_name.as_str(),
+        "meter-2"
+    );
+    // The grant is the union of the VEN's targets and its resources', so dropping a resource's
+    // targets must move it. This is the read the whole privacy model hangs off.
+    assert_eq!(
+        s.grant_for(&ClientId::new("c1").unwrap())
+            .await
+            .unwrap()
+            .targets(),
+        [target("group2")],
+        "the grant still carries a target no object has any more"
+    );
+
+    // -- report
+    let p = s
+        .create_program(program("tou"), now(), &Fanout::none())
+        .await
+        .unwrap();
+    let e = s
+        .create_event(hourly(&p.id, now(), 1), now(), &Fanout::none())
+        .await
+        .unwrap();
+    let filed = s
+        .create_report(
+            ReportRequest::new(e.id.clone(), ClientName::new("ven-a").unwrap(), Vec::new()),
+            Some(ClientId::new("c1").unwrap()),
+            now(),
+            &Fanout::none(),
+        )
+        .await
+        .unwrap();
+    let mut revised =
+        ReportRequest::new(e.id.clone(), ClientName::new("ven-a").unwrap(), Vec::new());
+    revised.report_name = Some("revised".into());
+    let updated = s
+        .update_report(&filed.id, revised, later(), &Fanout::none())
+        .await
+        .unwrap();
+    assert_eq!(updated.id, filed.id);
+    assert_eq!(updated.created_date_time, filed.created_date_time);
+    assert_eq!(updated.modification_date_time, later());
+    assert_eq!(updated.content.report_name.as_deref(), Some("revised"));
+    assert_eq!(
+        updated.client_id, filed.client_id,
+        "an update must not re-stamp the owner: the body carries no clientID to take it from"
+    );
+
+    // -- subscription
+    let sub = s
+        .create_subscription(
+            watching("c1", ObjectType::Event, "https://example.com/a"),
+            ClientId::new("c1").unwrap(),
+            OwnerKind::Ven,
+            now(),
+            &Fanout::none(),
+        )
+        .await
+        .unwrap();
+    let updated = s
+        .update_subscription(
+            &sub.id,
+            watching("c1", ObjectType::Report, "https://example.com/b"),
+            later(),
+            &Fanout::none(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(updated.id, sub.id);
+    assert_eq!(updated.created_date_time, sub.created_date_time);
+    assert_eq!(updated.modification_date_time, later());
+    assert_eq!(
+        updated.client_id, sub.client_id,
+        "an update must not re-stamp the owner"
+    );
+    let read = s.get_subscription(&sub.id).await.unwrap();
+    assert_eq!(
+        read.content.object_operations[0].objects,
+        [ObjectType::Report]
+    );
+    assert_eq!(
+        read.content.object_operations[0].callback_url,
+        "https://example.com/b"
+    );
+    // The watched-type index has to move with the document, or the fan-out keeps answering from the
+    // old one — the index is what `subscribers` reads, and it is a separate table on both SQL
+    // backends.
+    let by_type = |t| SubscriptionQuery {
+        program_id: None,
+        client_name: None,
+        objects: vec![t],
+        access: bl(),
+        page: page(),
+    };
+    assert_eq!(
+        s.list_subscriptions(&by_type(ObjectType::Report))
+            .await
+            .unwrap()
+            .len(),
+        1,
+        "the subscription did not move to the type it now watches"
+    );
+    assert!(
+        s.list_subscriptions(&by_type(ObjectType::Event))
+            .await
+            .unwrap()
+            .is_empty(),
+        "the subscription still answers for the type it stopped watching"
+    );
+    assert_eq!(
+        s.subscribers(&[ObjectType::Report]).await.unwrap().len(),
+        1,
+        "the fan-out query disagrees with the listing"
+    );
+}
+
+/// Every collection's `delete` returns the object it removed, and it is then gone.
+///
+/// `report`, `resource` and `subscription` had no delete behaviour in this suite (D-129). The
+/// return value is not a nicety: the API answers `200` with the deleted object, and the cascade
+/// announcement is built from it.
+pub async fn a_delete_returns_the_object_and_then_it_is_gone(s: &dyn Storage) {
+    let v = s
+        .create_ven(ven("c1", "ven-a", &[]), &Fanout::none())
+        .await
+        .unwrap();
+    let r = s
+        .create_resource(resource(&v.id, "meter", &[]), &Fanout::none())
+        .await
+        .unwrap();
+    let p = s
+        .create_program(program("tou"), now(), &Fanout::none())
+        .await
+        .unwrap();
+    let e = s
+        .create_event(hourly(&p.id, now(), 1), now(), &Fanout::none())
+        .await
+        .unwrap();
+    let filed = s
+        .create_report(
+            ReportRequest::new(e.id.clone(), ClientName::new("ven-a").unwrap(), Vec::new()),
+            Some(ClientId::new("c1").unwrap()),
+            now(),
+            &Fanout::none(),
+        )
+        .await
+        .unwrap();
+    let sub = s
+        .create_subscription(
+            watching("c1", ObjectType::Event, "https://example.com/a"),
+            ClientId::new("c1").unwrap(),
+            OwnerKind::Ven,
+            now(),
+            &Fanout::none(),
+        )
+        .await
+        .unwrap();
+
+    let removed = s.delete_report(&filed.id, &Fanout::none()).await.unwrap();
+    assert_eq!(removed.id, filed.id);
+    assert_eq!(
+        removed.client_id, filed.client_id,
+        "the owner comes back too"
+    );
+    assert!(matches!(
+        s.get_report(&filed.id).await,
+        Err(StorageError::NotFound { .. })
+    ));
+
+    let removed = s
+        .delete_subscription(&sub.id, &Fanout::none())
+        .await
+        .unwrap();
+    assert_eq!(removed.id, sub.id);
+    assert!(matches!(
+        s.get_subscription(&sub.id).await,
+        Err(StorageError::NotFound { .. })
+    ));
+    // And the watched-type index went with it, or the fan-out keeps queueing for a subscriber that
+    // no longer exists.
+    assert!(
+        s.subscribers(&[ObjectType::Event])
+            .await
+            .unwrap()
+            .is_empty()
+    );
+
+    let removed = s.delete_resource(&r.id, &Fanout::none()).await.unwrap();
+    assert_eq!(removed.id, r.id);
+    assert!(matches!(
+        s.get_resource(&r.id).await,
+        Err(StorageError::NotFound { .. })
+    ));
+
+    // Deleting all of it twice is a `NotFound`, not a silent success.
+    for outcome in [
+        s.delete_report(&filed.id, &Fanout::none()).await.err(),
+        s.delete_subscription(&sub.id, &Fanout::none()).await.err(),
+        s.delete_resource(&r.id, &Fanout::none()).await.err(),
+    ] {
+        assert!(
+            matches!(outcome, Some(StorageError::NotFound { .. })),
+            "deleting a gone object should say so: {outcome:?}"
+        );
+    }
+}
+
+/// Waiting for work returns, and returns within the budget it was given.
+///
+/// The last method on the trait with no behaviour here. Its *contract* is weak on purpose — the
+/// default is a sleep, and PostgreSQL replaces it with `LISTEN`/`NOTIFY` so a write wakes a
+/// dispatcher on commit rather than on a timer — but "returns at all, and no later than the timeout"
+/// is shared, and a backend that broke it would stall the outbox for ever with nothing to see: the
+/// queue would simply stop draining (D-129).
+///
+/// That Postgres returns *early* is asserted where it belongs, in that backend's own tests: a
+/// shared behaviour asserting it would fail on the two backends that legitimately sleep.
+pub async fn waiting_for_work_returns_within_its_timeout(s: &dyn Storage) {
+    let budget = core::time::Duration::from_millis(50);
+    let started = std::time::Instant::now();
+    s.await_outbox(budget).await;
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < core::time::Duration::from_secs(5),
+        "await_outbox({budget:?}) took {elapsed:?}; a dispatcher waiting on this never drains"
+    );
+}
+
+/// A live backend says it is live.
+///
+/// One line, and it is what `GET /health` answers from — the endpoint an orchestrator restarts a
+/// container on.
+pub async fn a_reachable_backend_reports_itself_healthy(s: &dyn Storage) {
+    assert!(s.healthy().await);
+}
+
 pub async fn ownership_filters_subscriptions(s: &dyn Storage) {
     // A subscription carries its subscriber's callbackUrl and bearerToken. This is the behaviour
     // the in-memory backend was missing while both SQL backends had it — the exact divergence a
@@ -1133,6 +1484,72 @@ pub async fn a_programme_scoped_subscription_goes_with_its_programme(s: &dyn Sto
         "a subscription scoped to a deleted programme must not survive it: {left:?}"
     );
 }
+
+/// Create a programme whose cascade removes one of every kind of row that carries targets.
+///
+/// Not a behaviour — a *fixture*, for the two backends that keep targets in a side table. The
+/// suite cannot state this one: `object_target` is a schema detail no trait method exposes, and the
+/// in-memory backend has no such table to leak. See [`ORPHANED_TARGETS`] for what the SQL backends
+/// then assert, and D-123 for what they were leaking.
+///
+/// Returns the programme's id.
+pub async fn seed_a_cascade_of_targeted_children(s: &dyn Storage) -> ObjectId {
+    // Named uniquely, because this fixture runs against a database the other behaviours are using
+    // at the same time and `programName` is unique per VTN.
+    static NEXT: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+    let n = NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    let name = crate::std_shim::format!("cascade-{n}");
+
+    let p = s
+        .create_program(program(&name), now(), &Fanout::none())
+        .await
+        .unwrap();
+    // A programme with targets of its own.
+    let mut request = program(&name);
+    request.targets = vec![target("group1")];
+    s.update_program(&p.id, request, now(), &Fanout::none())
+        .await
+        .unwrap();
+    // A targeted event under it.
+    let mut event = hourly(&p.id, now(), 1);
+    event.targets = vec![target("group1")];
+    s.create_event(event, now(), &Fanout::none()).await.unwrap();
+    // And a targeted subscription scoped to it, which is the one the cascade forgot.
+    s.create_subscription(
+        SubscriptionRequest {
+            client_name: ClientName::new("c1").unwrap(),
+            program_id: Some(p.id.clone()),
+            object_operations: vec![ObjectOperation {
+                objects: vec![ObjectType::Event],
+                operations: vec![Operation::Create],
+                callback_url: "https://example.com/hook".into(),
+                bearer_token: None,
+            }],
+            targets: vec![target("group1")],
+        },
+        ClientId::new("c1").unwrap(),
+        OwnerKind::Ven,
+        now(),
+        &Fanout::none(),
+    )
+    .await
+    .unwrap();
+    p.id
+}
+
+/// Target rows whose object is gone: what a SQL backend must find none of, ever.
+///
+/// One statement, shared, so the two backends cannot check different things. It states the
+/// invariant rather than counting rows — `SELECT COUNT(*) FROM object_target` after a truncate
+/// would also do, but only on a database nothing else is using, and both backends run their
+/// behaviours concurrently against one.
+pub const ORPHANED_TARGETS: &str = "\
+SELECT COUNT(*) FROM object_target t \
+WHERE NOT EXISTS (SELECT 1 FROM program p WHERE p.id = t.object_id) \
+  AND NOT EXISTS (SELECT 1 FROM event e WHERE e.id = t.object_id) \
+  AND NOT EXISTS (SELECT 1 FROM subscription s WHERE s.id = t.object_id) \
+  AND NOT EXISTS (SELECT 1 FROM ven v WHERE v.id = t.object_id) \
+  AND NOT EXISTS (SELECT 1 FROM resource r WHERE r.id = t.object_id)";
 
 pub async fn an_event_deletion_announces_its_reports(s: &dyn Storage) {
     // `report.eventID` cascades, so deleting an event takes the reports filed against it. The
@@ -1893,6 +2310,11 @@ macro_rules! run_suite {
             check!(a_ven_listing_without_targets_sees_no_targeted_object);
             check!(ownership_filters_reports);
             check!(a_resource_is_owned_through_its_ven);
+            check!(a_ven_is_found_by_the_client_that_owns_it);
+            check!(an_update_keeps_the_identity_and_replaces_the_content);
+            check!(a_delete_returns_the_object_and_then_it_is_gone);
+            check!(a_reachable_backend_reports_itself_healthy);
+            check!(waiting_for_work_returns_within_its_timeout);
             check!(subscriptions_filter_by_watched_object_type);
             check!(ownership_filters_subscriptions);
             check!(subscriptions_come_back_in_creation_order);

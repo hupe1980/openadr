@@ -6,7 +6,42 @@ use crate::std_shim::{String, ToString, format};
 use serde::{Deserialize, Serialize};
 
 /// Base URI for problem types this implementation defines.
-pub const PROBLEM_TYPE_BASE: &str = "https://openadr.dev/problems/";
+///
+/// A domain this project publishes, because RFC 9457 §3.1.1 asks that dereferencing a `type` URI
+/// produce documentation of that type — and a URI minted under somebody else's domain documents
+/// nothing and is theirs to redirect. Every slug below resolves; `cargo xtask check-problems`
+/// fails if one stops.
+pub const PROBLEM_TYPE_BASE: &str = "https://hupe1980.github.io/openadr/problems/";
+
+/// Every problem type slug this implementation can mint.
+///
+/// The registry `PROBLEM_TYPE_BASE` points at documents exactly these, and `cargo xtask
+/// check-problems` fails if the two lists diverge — a slug renamed in code without a matching
+/// redirect leaves a `type` URI that resolves to nothing, which is the whole reason to publish them.
+pub const PROBLEM_TYPES: &[&str] = &[
+    // `ApiError::slug`.
+    "bad-request",
+    "invalid-payload",
+    "dangling-reference",
+    "unsupported-media-type",
+    "payload-too-large",
+    "unauthorized",
+    "missing-scope",
+    "forbidden",
+    "not-found",
+    "no-such-route",
+    "conflict",
+    "not-implemented",
+    "internal-server-error",
+    "storage-unavailable",
+    "unavailable",
+    // Produced by a middleware rather than a handler; see `layer_problem`.
+    "method-not-allowed",
+    "timeout",
+    "error",
+    // Synthesised by the client for a peer that sent an error with no problem body.
+    "unexpected",
+];
 
 /// A machine-readable error body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -89,7 +124,7 @@ mod tests {
         let p = Problem::new(400, "bad-request", "Bad Request");
         assert_eq!(
             p.r#type.as_deref(),
-            Some("https://openadr.dev/problems/bad-request")
+            Some("https://hupe1980.github.io/openadr/problems/bad-request")
         );
     }
 }

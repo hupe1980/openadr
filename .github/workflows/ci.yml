@@ -48,8 +48,11 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features
 
-      # `--test-threads=1` for the storage suites only: every backend shares one Postgres
-      # database and truncates it between behaviours.
+      # Run in parallel, as a developer does. This used to be `--test-threads=1`, because every
+      # Postgres test shared one database and emptied it with `TRUNCATE … CASCADE` between
+      # behaviours — which does not merely interfere with a concurrent test, it deadlocks with it.
+      # Each of them now creates a database named after itself (D-125), so serialising here would
+      # only mean CI exercising a concurrency the developers running this command do not.
       #
       # Two suites reach for Docker. The Postgres backend uses `OPENADR_TEST_POSTGRES` above rather
       # than starting a container of its own — a service container is already here — and
@@ -60,7 +63,7 @@ jobs:
       # writes the payload table, and `check-paths`' reading of a `security` block, were tested by
       # six tests nothing executed.
       - name: Test
-        run: cargo test --workspace --all-features -- --test-threads=1
+        run: cargo test --workspace --all-features
 
       - name: Docs
         run: cargo doc --no-deps --all-features
@@ -180,6 +183,22 @@ jobs:
         run: cargo xtask check-model
       - name: Check the routes and scopes against the OpenAPI document
         run: cargo xtask check-paths
+
+      # The same question asked of the prose rather than of the YAML: every MUST and SHALL in the
+      # Definitions and in the notifier binding document sits in a section something in `src/`
+      # cites. A release that adds a requirement fails here until somebody decides where it is met.
+      - name: Trace the normative statements
+        run: cargo xtask trace
+
+      # Not about the document: `problem.type` URIs are ours to mint and ours to keep resolving.
+      - name: Check every problem type URI resolves
+        run: cargo xtask check-problems
+
+      # Nor about the document: the storage suite is the only thing holding three backends to one
+      # set of behaviours, and "growing the suite is the coverage" (D-054) had been a matter of
+      # remembering. This makes it a matter of failing.
+      - name: Check the storage suite exercises the whole trait
+        run: cargo xtask check-suite
 
   deploy:
     name: A real broker

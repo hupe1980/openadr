@@ -204,6 +204,17 @@ impl Harness {
     }
 }
 
+/// One case at a time.
+///
+/// The four cases are separate tests, so the runner would otherwise measure them in parallel — and
+/// four fan-outs competing for one machine's cores and one disk is a measurement of contention
+/// rather than of the fan-out. It also let them share a SQLite file and, with `OPENADR_TEST_POSTGRES`
+/// set, truncate one database underneath each other.
+async fn measuring() -> tokio::sync::MutexGuard<'static, ()> {
+    static LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    LOCK.lock().await
+}
+
 /// A counter so names are unique across cases sharing one database.
 fn uid() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -219,25 +230,58 @@ fn event_body(program: &str) -> Value {
     })
 }
 
-/// Every backend this run can reach.
-async fn backends() -> Vec<(&'static str, SharedStorage)> {
-    let mut out: Vec<(&'static str, SharedStorage)> = vec![("memory", MemoryStorage::shared())];
+/// A backend a case can ask for a **clean** store from.
+///
+/// Per row rather than per run. Sharing one store across the rows of a case makes every row after
+/// the first measure a VTN carrying the previous rows' objects — so "0 subscribers" means zero only
+/// while it happens to run first, and the moment a row is added or reordered the labels stop
+/// describing what was measured. Which is the one thing a measurement has to get right.
+enum Backend {
+    Memory,
+    Sqlite(std::path::PathBuf),
+    #[cfg(feature = "postgres")]
+    Postgres(String),
+}
 
-    // A file rather than `:memory:`: an in-memory SQLite measures SQLite's planner and none of the
+impl Backend {
+    async fn fresh(&self) -> SharedStorage {
+        match self {
+            Backend::Memory => MemoryStorage::shared(),
+            Backend::Sqlite(dir) => {
+                // Its own file, never a re-used one: the cases hold a store for as long as they
+                // measure, and deleting a file another row is still reading is not a clean start.
+                let path = dir.join(format!("load-{}.sqlite", uid()));
+                SqliteStorage::shared(path.to_str().unwrap())
+                    .await
+                    .expect("a fresh SQLite file")
+            }
+            #[cfg(feature = "postgres")]
+            Backend::Postgres(url) => {
+                let store = openadr::vtn::store::PostgresStorage::open(url)
+                    .await
+                    .expect("the server answered a moment ago");
+                store.truncate_all().await.expect("a clean database");
+                Arc::new(store) as SharedStorage
+            }
+        }
+    }
+}
+
+/// Every backend this run can reach.
+async fn backends() -> Vec<(&'static str, Backend)> {
+    let mut out: Vec<(&'static str, Backend)> = vec![("memory", Backend::Memory)];
+
+    // Files rather than `:memory:`: an in-memory SQLite measures SQLite's planner and none of the
     // I/O a deployment has.
-    let path = std::env::temp_dir().join(format!("openadr-load-{}.sqlite", std::process::id()));
-    let _ = std::fs::remove_file(&path);
-    if let Ok(store) = SqliteStorage::shared(path.to_str().unwrap()).await {
-        out.push(("sqlite", store));
+    let dir = std::env::temp_dir().join(format!("openadr-load-{}", std::process::id()));
+    if std::fs::create_dir_all(&dir).is_ok() {
+        out.push(("sqlite", Backend::Sqlite(dir)));
     }
 
     #[cfg(feature = "postgres")]
     if let Ok(url) = std::env::var("OPENADR_TEST_POSTGRES") {
         match openadr::vtn::store::PostgresStorage::open(&url).await {
-            Ok(store) => {
-                store.truncate_all().await.expect("a clean database");
-                out.push(("postgres", Arc::new(store) as SharedStorage));
-            }
+            Ok(_) => out.push(("postgres", Backend::Postgres(url))),
             Err(e) => eprintln!("postgres unavailable ({e}); skipping that backend"),
         }
     }
@@ -252,15 +296,16 @@ async fn backends() -> Vec<(&'static str, SharedStorage)> {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "a measurement, not an assertion: run with --ignored --nocapture"]
 async fn write_latency_against_subscriber_count() {
+    let _measuring = measuring().await;
     println!("\n== POST /events, by matching subscriptions ==");
     println!(
         "{:<10} {:>12} {:>10} {:>10} {:>12}",
         "backend", "subscribers", "p50 ms", "p95 ms", "queued/write"
     );
 
-    for (name, storage) in backends().await {
+    for (name, backend) in backends().await {
         for subscribers in [0usize, 100, 1_000] {
-            let h = Harness::new(storage.clone(), false).await;
+            let h = Harness::new(backend.fresh().await, false).await;
             let program = h.program().await;
             h.subscriptions(subscribers).await;
 
@@ -296,15 +341,16 @@ async fn write_latency_against_subscriber_count() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "a measurement, not an assertion: run with --ignored --nocapture"]
 async fn broker_fanout_against_ven_count() {
+    let _measuring = measuring().await;
     println!("\n== POST /events with a broker, by VEN count ==");
     println!(
         "{:<10} {:>8} {:>10} {:>10} {:>12}",
         "backend", "vens", "p50 ms", "p95 ms", "queued/write"
     );
 
-    for (name, storage) in backends().await {
+    for (name, backend) in backends().await {
         for vens in [0usize, 100, 1_000] {
-            let h = Harness::new(storage.clone(), true).await;
+            let h = Harness::new(backend.fresh().await, true).await;
             let program = h.program().await;
             h.vens(vens).await;
 
@@ -340,14 +386,17 @@ async fn broker_fanout_against_ven_count() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "a measurement, not an assertion: run with --ignored --nocapture"]
 async fn drain_rate_by_concurrency() {
+    let _measuring = measuring().await;
     println!("\n== outbox drain, 2 000 entries ==");
     println!(
         "{:<10} {:>12} {:>12} {:>14}",
         "backend", "concurrency", "seconds", "entries/sec"
     );
 
-    for (name, storage) in backends().await {
+    for (name, backend) in backends().await {
         for concurrency in [1usize, 8, 64] {
+            // Held, because the dispatcher under test has to drain the store the harness filled.
+            let storage = backend.fresh().await;
             let h = Harness::new(storage.clone(), false).await;
             let program = h.program().await;
             h.subscriptions(100).await;
@@ -386,20 +435,51 @@ async fn drain_rate_by_concurrency() {
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "a measurement, not an assertion: run with --ignored --nocapture"]
 async fn report_ingest_rate() {
+    let _measuring = measuring().await;
     println!("\n== POST /reports, 200 reports ==");
     println!(
-        "{:<10} {:>12} {:>10} {:>10} {:>14}",
-        "backend", "subscribers", "p50 ms", "p95 ms", "reports/sec"
+        "{:<10} {:>12} {:>6} {:>7} {:>10} {:>10} {:>14}",
+        "backend", "subscribers", "vens", "broker", "p50 ms", "p95 ms", "reports/sec"
     );
 
-    for (name, storage) in backends().await {
-        // With and without subscribers, because the claim being checked is that report ingest is
-        // *not* proportional to the subscriptions in the VTN — the fan-out query is narrowed by
-        // object type, so an event subscription must cost a report write nothing.
-        for subscribers in [0usize, 1_000] {
-            let h = Harness::new(storage.clone(), false).await;
+    for (name, backend) in backends().await {
+        // Three shapes, because report ingest is the highest-rate write in the system and has no
+        // fan-out at all — so its cost must not depend on anything it does not reach.
+        //
+        // * unrelated *subscriptions*: the fan-out query is narrowed by object type, so an event
+        //   subscription costs a report write nothing (D-116);
+        // * unrelated *VENs*, with a broker configured: the snapshot is narrowed by owner, so the
+        //   fleet costs a report write nothing either. That row is the one this harness could not
+        //   see for as long as it measured report ingest only on a VTN with no broker — where the
+        //   grant sweep it would have caught is skipped entirely (D-124).
+        // The last two rows are the comparison that matters: the same broker, with and without a
+        // fleet behind it. They must read alike.
+        for (subscribers, vens, mqtt) in [
+            (0usize, 0usize, false),
+            (1_000, 0, false),
+            (0, 0, true),
+            (0, 1_000, true),
+        ] {
+            let h = Harness::new(backend.fresh().await, mqtt).await;
             let program = h.program().await;
             h.subscriptions(subscribers).await;
+            h.vens(vens).await;
+            if mqtt {
+                // The report's own owner, so the write publishes to a real VEN topic rather than
+                // measuring the lookup that finds nothing.
+                let (status, body) = h
+                    .send(
+                        Method::POST,
+                        "/vens",
+                        Some(json!({
+                            "objectType": "BL_VEN_REQUEST",
+                            "clientID": "client-0",
+                            "venName": format!("owner-{}", uid()),
+                        })),
+                    )
+                    .await;
+                assert_eq!(status, StatusCode::CREATED, "{body}");
+            }
             let (status, event) = h
                 .send(Method::POST, "/events", Some(event_body(&program)))
                 .await;
@@ -431,7 +511,8 @@ async fn report_ingest_rate() {
             }
             let elapsed = started.elapsed().as_secs_f64();
             println!(
-                "{name:<10} {subscribers:>12} {:>10.2} {:>10.2} {:>14.0}",
+                "{name:<10} {subscribers:>12} {vens:>6} {:>7} {:>10.2} {:>10.2} {:>14.0}",
+                if mqtt { "yes" } else { "no" },
                 timing.ms(0.50),
                 timing.ms(0.95),
                 200.0 / elapsed.max(f64::EPSILON)

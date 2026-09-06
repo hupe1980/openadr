@@ -220,6 +220,17 @@ time by any VEN — and neither can one with no duration whose successor does no
 **We return `400`.** Catching it at the boundary turns a silent field failure into an error the
 publisher sees immediately.
 
+### An event whose durations run backwards is rejected
+
+The `duration` pattern is `^(-?)P…`, so `-PT1H` is well formed. Nothing OpenADR uses a duration for
+has a backwards reading: an interval would end before it began, an event would stop before it
+started. The minus is an artefact of a general ISO 8601 grammar.
+
+**We return `400`, naming the field.** Stored instead, such an event is inert — its active window
+ends before it begins, so `?active=true` never returns it and no VEN ever sees it. The wire model
+still *parses* one, and `Duration::is_negative` reports it, because a client reading somebody else's
+VTN has to be able to say what it received.
+
 ---
 
 ## Additions, all optional
@@ -229,10 +240,10 @@ None of these change a specified shape, and a client that ignores them sees a co
 | Addition | Why |
 |---|---|
 | `ETag` / `If-None-Match` on every `GET` | OpenADR has no delta sync; every deployment polls. Plain HTTP, invisible to clients that ignore it. |
-| `GET /programs?programName=` | Finding one tariff among hundreds otherwise means paging the whole collection. Proposed upstream as [specification#418](https://github.com/oadr3-org/specification/issues/418); already implemented by public price servers. |
+| `GET /programs?programName=` | Finding one tariff among hundreds otherwise means paging the whole collection. `openadr3.yaml` declares no such parameter, so `GET /openapi.json` marks it as an extension. |
 | `targets=a,b` as well as `targets=a&targets=b` | Both forms occur in the field. It costs one thing, named here rather than discovered: a target containing a literal comma cannot be expressed in a query, because the comma is read as a separator. `target` is an unconstrained 1–128 character string, so such a value is legal; use the repeated form and avoid commas in target names. |
 | Private-address check on webhook callbacks | The security chapter requires the HTTPS check and describes the server-side request forgery risk without mandating a check. This is the other half of that advice. |
-| `problem.type` as a dereferenceable URI | The schema allows any URI; `about:blank` helps nobody. |
+| `problem.type` as a dereferenceable URI | The schema allows any URI; `about:blank` helps nobody. Each one resolves to [its entry](@/docs/problems.md). |
 | `problem.instance` and `X-Request-Id` | The same id on both, so a client quoting one is quoting the other and an operator can find the request in the log. An id supplied by a proxy is kept. |
 | gzip and brotli response compression | "Support for a given compression format is optional for VTNs, although gzip is encouraged." |
 | A request body size limit and a request timeout | The security chapter delegates rate limiting to an API gateway. Not every deployment has one. |

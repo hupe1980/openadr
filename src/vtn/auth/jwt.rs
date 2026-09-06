@@ -164,18 +164,27 @@ impl JwtAuthenticator {
     async fn key_for(&self, kid: &str) -> Result<VerifyingKey, AuthError> {
         {
             let cache = self.cache.read().unwrap_or_else(|e| e.into_inner());
+            let held = cache.keys.get(kid).cloned();
             let fresh = cache
                 .fetched_at
                 .is_some_and(|at| at.elapsed() < self.config.refresh_after);
-            if fresh && let Some(key) = cache.keys.get(kid) {
-                return Ok(key.clone());
+            if fresh && let Some(key) = held {
+                return Ok(key);
             }
-            // An unknown `kid` on a freshly fetched set is a bad token, not a rotation.
             if cache
                 .fetched_at
                 .is_some_and(|at| at.elapsed() < self.config.min_refresh_interval)
             {
-                return Err(AuthError::Invalid);
+                // Too soon to fetch again. An unknown `kid` on a set this recent is a bad token
+                // rather than a rotation, and refusing it is what stops a stream of nonsense ids
+                // becoming a load generator aimed at the authorization server.
+                //
+                // A key we *do* hold is served from the stale set instead of refused. Reaching
+                // here with one at all needs `refresh_after` below `min_refresh_interval` — a
+                // revocation window shorter than the anti-amplification window, which is a
+                // configuration contradiction. Resolving it by rejecting valid tokens would take
+                // the whole VTN down for the difference between the two.
+                return held.ok_or(AuthError::Invalid);
             }
         }
 

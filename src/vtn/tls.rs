@@ -1,5 +1,10 @@
 //! Serving the VTN over TLS, and deciding who may connect at all.
 //!
+//! `[Def §HTTPS/TLS]`: a VTN or VEN uses HTTP over TLS regardless of its intended operating
+//! environment, and the TLS version is 1.2 or later. This module is the first half — the listener
+//! offers TLS 1.2 and 1.3 and nothing earlier, because [`rustls`] implements nothing earlier. The
+//! second half is the client's, which is `reqwest` over `rustls` with the same floor.
+//!
 //! Without this the single-binary deployment needs a reverse proxy to be reachable over anything but
 //! plaintext — on the machine with the least room for a second process. The specification's own
 //! worked discovery record writes `local_url=https://…`, so a local VTN is expected to speak it.

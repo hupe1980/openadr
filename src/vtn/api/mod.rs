@@ -106,6 +106,11 @@ impl Ctx {
     ///
     /// Business logic reads with `read_all`; a VEN with `read_targets` or `read_ven_objects`; an
     /// anonymous caller only on a VTN that admits them.
+    ///
+    /// `read_bl` opens this gate and nothing beyond it. It is the notifier-metadata scope, not an
+    /// identity: a credential carrying only `read_bl` passes here and is then read as an ordinary
+    /// identified client, so object privacy applies to it in full (D-121). What it uniquely buys is
+    /// [`Scope::ReadBl`] on the five collection-topic endpoints, which ask for it by name.
     pub fn require_read(&self) -> Result<(), ApiError> {
         if self.principal.scopes.contains_any(&[
             Scope::ReadAll,
@@ -404,6 +409,11 @@ impl<S: Send + Sync> axum::extract::FromRequest<S> for JsonBody {
 }
 
 /// Parse a request body, reporting the offending field rather than "invalid JSON".
+///
+/// `[Def §Required and optional properties]` and `[Def §Message validation]`: a body missing a
+/// required property is a `400` and creates nothing. Both fall out of the request types having no
+/// `Option` where the schema has no default — serde refuses the body, and the message names the
+/// field it was looking for, which is the part a `400` is worth anything for.
 pub fn parse_body<T: serde::de::DeserializeOwned>(bytes: &Bytes) -> Result<T, ApiError> {
     if bytes.is_empty() {
         return Err(ApiError::BadRequest("a request body is required".into()));
@@ -548,16 +558,60 @@ pub fn require_owner(
 // Notification plumbing
 // ---------------------------------------------------------------------------
 
-/// Take the snapshot a write needs in order to queue its notifications.
+/// Take the snapshot a write to a **targeted** object needs — `program` and `event`.
 ///
 /// Called *before* the write, and handed to the storage method, which computes the deliveries and
 /// inserts them in the same transaction as the change. Doing it this way is what makes the
 /// change and the record that it must be announced commit together: a crash cannot leave an event
 /// created and nobody told, which is a failure OpenADR has no way to signal afterwards.
 ///
-/// Two reads, both of which a write already pays for indirectly. When there is nothing subscribed
-/// and no broker, [`Fanout::is_empty`] short-circuits everything downstream.
+/// Whether a given VEN may hear about a targeted object is decided by *that VEN's* grant, so this
+/// reading of the snapshot has to sweep the whole fleet. [`fanout_owned`] is the other reading, and
+/// the difference between them is the difference between one indexed lookup and every VEN in the
+/// VTN (D-124).
+///
+/// When there is nothing subscribed and no broker, [`Fanout::is_empty`] short-circuits everything
+/// downstream.
 pub async fn fanout(state: &AppState, object_type: ObjectType) -> Fanout {
+    snapshot(state, object_type, Gate::Targeted).await
+}
+
+/// Take the snapshot a write to an **owned** object needs — `ven`, `resource`, `report` and
+/// `subscription`.
+///
+/// Visibility of these is decided by `clientID` alone `[Def §Object Privacy]`, and no grant enters
+/// into it: a webhook subscriber hears about one only if it owns it, and exactly one VEN topic
+/// carries it — its owner's. So the snapshot is that one VEN, resolved by an indexed lookup, rather
+/// than the fleet sweep [`fanout`] performs. `POST /reports` is the highest-rate write in the
+/// system, and this is what keeps its cost independent of how many VENs the VTN has (D-124).
+///
+/// `owner` is `None` only where the object genuinely has none — a report filed before `clientID`
+/// stamping — and such an object reaches no VEN topic, exactly as it reaches no VEN.
+pub async fn fanout_owned(
+    state: &AppState,
+    object_type: ObjectType,
+    owner: Option<&crate::model::ClientId>,
+) -> Fanout {
+    debug_assert!(
+        matches!(
+            object_type,
+            ObjectType::Ven | ObjectType::Resource | ObjectType::Report | ObjectType::Subscription
+        ),
+        "{object_type} is gated by targeting, not by ownership; use `fanout`"
+    );
+    snapshot(state, object_type, Gate::Owned(owner)).await
+}
+
+/// Which rule will decide who hears, and therefore what the snapshot has to carry.
+#[derive(Debug, Clone, Copy)]
+enum Gate<'a> {
+    /// Targeting: every VEN's grant is a possible admission, so all of them are needed.
+    Targeted,
+    /// Ownership: only this client's VEN is, so only its row is.
+    Owned(Option<&'a crate::model::ClientId>),
+}
+
+async fn snapshot(state: &AppState, object_type: ObjectType, gate: Gate<'_>) -> Fanout {
     // Narrowed by the database — `objectOperations.objects` is indexed on both SQL backends — so a
     // `POST /reports` from a fleet of VENs does not walk every event subscription in the VTN.
     //
@@ -617,16 +671,32 @@ pub async fn fanout(state: &AppState, object_type: ObjectType) -> Fanout {
         }
     };
 
-    // The grant sweep is only worth its cost when something will read it: the broker fan-out walks
-    // every VEN by construction, and a webhook subscriber's visibility of a targeted object is
-    // decided by its grant. With neither, a VTN that has no subscribers and no broker — which is
-    // most of them, most of the time — pays nothing on the write path at all.
+    // The VEN index is only worth reading when something will read it: the broker fan-out walks it
+    // by construction, and a webhook subscriber's visibility of a *targeted* object is decided by
+    // its grant. With neither, a VTN that has no subscribers and no broker — which is most of them,
+    // most of the time — pays nothing on the write path at all.
     if subscriptions.is_empty() && topics.is_none() {
         return Fanout::none();
     }
 
-    // One sweep of the grants, not one lookup per subscriber.
-    let grants = state.storage.all_grants().await.unwrap_or_default();
+    let grants = match gate {
+        // One sweep of the grants, not one lookup per subscriber.
+        Gate::Targeted => state.storage.all_grants().await.unwrap_or_default(),
+        // One row, or none. An owned object reaches its owner's VEN topic and no other, and no
+        // grant decides anything about it — so the fleet is not merely unnecessary here, it is
+        // unread.
+        Gate::Owned(None) => Vec::new(),
+        Gate::Owned(Some(client_id)) => match state.storage.get_ven_by_client(client_id).await {
+            Ok(Some(ven)) => vec![(ven.id, ven.client_id, Grant::empty())],
+            // A client with no VEN object owns no VEN topic. Its webhook subscriptions are
+            // unaffected: ownership is decided from the object, not from this index.
+            Ok(None) => Vec::new(),
+            Err(e) => {
+                tracing::error!(error = %e, %client_id, "could not resolve the owner's VEN");
+                Vec::new()
+            }
+        },
+    };
     let by_client: std::collections::BTreeMap<_, _> = grants
         .iter()
         .map(|(_, client_id, grant)| (client_id.clone(), grant.clone()))
@@ -765,7 +835,10 @@ pub async fn admin_outbox_retry(
 
 /// `GET /auth/server` — where to exchange credentials for a token.
 ///
-/// Required even when the VTN issues no tokens itself.
+/// Required even when the VTN issues no tokens itself: `[Def §Token endpoint discovery]` says a VTN
+/// that expects its VENs to have been provisioned out of band **still** implements at least this
+/// endpoint, and may implement `POST /auth/token` or not. So this is unconditional and the grant is
+/// the optional half.
 pub async fn auth_server(State(state): State<AppState>) -> Json<AuthServerInfo> {
     Json(AuthServerInfo {
         token_url: state.authenticator.token_url(),
@@ -991,6 +1064,27 @@ pub fn parse_id(raw: &str) -> Result<ObjectId, ApiError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The middleware slugs, held to the same published registry as the handler ones.
+    #[test]
+    fn layer_problems_mint_published_types() {
+        use crate::model::problem::PROBLEM_TYPES;
+
+        for status in [
+            StatusCode::METHOD_NOT_ALLOWED,
+            StatusCode::PAYLOAD_TOO_LARGE,
+            StatusCode::GATEWAY_TIMEOUT,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            // The fallback arm, which any other status reaches.
+            StatusCode::BAD_GATEWAY,
+        ] {
+            let (slug, _) = layer_problem(status);
+            assert!(
+                PROBLEM_TYPES.contains(&slug),
+                "{slug} is minted but not published; add it to PROBLEM_TYPES and the registry page"
+            );
+        }
+    }
 
     #[test]
     fn repeated_and_comma_separated_lists_both_parse() {

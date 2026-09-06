@@ -14,7 +14,7 @@ use crate::model::{ObjectId, ObjectType, Resource, ResourceName, ResourceRequest
 use crate::schema::PayloadGroup;
 
 use super::super::{ApiError, AppState, auth::Scope, store::ResourceQuery};
-use super::{Ctx, JsonBody, check_attributes, created, fanout, ok, params, parse_id};
+use super::{Ctx, JsonBody, check_attributes, created, fanout_owned, ok, params, parse_id};
 
 /// `GET /resources`
 pub async fn list(
@@ -48,8 +48,10 @@ pub async fn create(
     let request: ResourceRequest = body.parse()?;
     check_attributes(&state, request.attributes(), PayloadGroup::VenAttribute)?;
     let now = state.clock.now();
-    let fanout = fanout(&state, ObjectType::Resource).await;
+    // Built before the snapshot, because the snapshot is keyed on the object's owner — and a
+    // resource's owner is its VEN's.
     let resource = build(&state, &ctx, request, now, None).await?;
+    let fanout = owned_fanout(&state, &resource).await;
     let resource = state.storage.create_resource(resource, &fanout).await?;
     created(&resource)
 }
@@ -82,8 +84,8 @@ pub async fn update(
 
     let request: ResourceRequest = body.parse()?;
     check_attributes(&state, request.attributes(), PayloadGroup::VenAttribute)?;
-    let fanout = fanout(&state, ObjectType::Resource).await;
     let resource = build(&state, &ctx, request, state.clock.now(), Some(&existing)).await?;
+    let fanout = owned_fanout(&state, &resource).await;
     let resource = state
         .storage
         .update_resource(&id, resource, &fanout)
@@ -99,9 +101,9 @@ pub async fn delete(
 ) -> Result<Response, ApiError> {
     ctx.require(Scope::WriteVens)?;
     let id = parse_id(&id)?;
-    let fanout = fanout(&state, ObjectType::Resource).await;
     let existing = state.storage.get_resource(&id).await?;
     require_owner(&state, &ctx, &existing, &id).await?;
+    let fanout = owned_fanout(&state, &existing).await;
     let resource = state.storage.delete_resource(&id, &fanout).await?;
     ok(&state, &HeaderMap::new(), &resource)
 }
@@ -186,6 +188,24 @@ async fn own_ven_id(state: &AppState, ctx: &Ctx) -> Result<Option<ObjectId>, Api
         .get_ven_by_client(client_id)
         .await?
         .map(|v| v.id))
+}
+
+/// The notification snapshot for a resource write.
+///
+/// A resource is owned through its VEN, and the snapshot is keyed on the owning *client* — so this
+/// is the one owned collection whose owner is not already on the object. One indexed read of the
+/// parent, against a fleet sweep on every write (D-124). A parent that cannot be read leaves the
+/// snapshot without a VEN topic rather than failing the write, which is the same way the rest of
+/// the fan-out fails: open, because a subscriber that is not told recovers by polling and a write
+/// that is refused does not.
+async fn owned_fanout(state: &AppState, resource: &Resource) -> super::super::notify::Fanout {
+    let owner = state
+        .storage
+        .get_ven(&resource.ven_id)
+        .await
+        .map(|v| v.client_id)
+        .ok();
+    fanout_owned(state, ObjectType::Resource, owner.as_ref()).await
 }
 
 /// A resource is owned through its VEN, so the parent decides.

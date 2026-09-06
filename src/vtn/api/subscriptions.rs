@@ -9,7 +9,7 @@ use axum::{
 use crate::model::{ClientName, ObjectType, SubscriptionRequest};
 
 use super::super::{ApiError, AppState, auth::Scope, store::OwnerKind, store::SubscriptionQuery};
-use super::{Ctx, JsonBody, created, fanout, ok, params, parse_id, require_owner};
+use super::{Ctx, JsonBody, created, fanout_owned, ok, params, parse_id, require_owner};
 
 /// `GET /subscriptions`
 pub async fn list(
@@ -54,7 +54,7 @@ pub async fn create(
     } else {
         OwnerKind::Ven
     };
-    let fanout = fanout(&state, ObjectType::Subscription).await;
+    let fanout = fanout_owned(&state, ObjectType::Subscription, Some(&owner)).await;
     let subscription = state
         .storage
         .create_subscription(request, owner, owner_kind, state.clock.now(), &fanout)
@@ -101,7 +101,7 @@ pub async fn update(
     let request: SubscriptionRequest = body.parse()?;
     validate(&request, &state.config.callback_policy)?;
     challenge(&state, &request).await?;
-    let fanout = fanout(&state, ObjectType::Subscription).await;
+    let fanout = fanout_owned(&state, ObjectType::Subscription, Some(&existing.client_id)).await;
     let subscription = state
         .storage
         .update_subscription(&id, request, state.clock.now(), &fanout)
@@ -117,7 +117,6 @@ pub async fn delete(
 ) -> Result<Response, ApiError> {
     ctx.require(Scope::WriteSubscriptions)?;
     let id = parse_id(&id)?;
-    let fanout = fanout(&state, ObjectType::Subscription).await;
     let existing = state.storage.get_subscription(&id).await?;
     require_owner(
         &ctx.owned_id_access(),
@@ -125,6 +124,9 @@ pub async fn delete(
         ObjectType::Subscription,
         &id,
     )?;
+    // After the read, because the snapshot is keyed on the object's owner — and still before the
+    // write, which is the only ordering the transactional outbox requires.
+    let fanout = fanout_owned(&state, ObjectType::Subscription, Some(&existing.client_id)).await;
     let subscription = state.storage.delete_subscription(&id, &fanout).await?;
     ok(&state, &HeaderMap::new(), &subscription)
 }

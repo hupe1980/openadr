@@ -191,8 +191,8 @@ Alliance test tool. MQTT 5, ACME, mapping a client certificate to a `clientID`, 
 webhook receiver on the VEN side are not written.
 [The full picture](https://hupe1980.github.io/openadr/docs/status/).
 
-**449 tests**, and the distribution is the point: most of the effort is at the seams. Sixty-eight
-drive the real HTTP router; the storage conformance suite is 52 behaviours run against all three
+**466 tests**, and the distribution is the point: most of the effort is at the seams. Seventy
+drive the real HTTP router; the storage conformance suite is 57 behaviours run against all three
 backends; and the rest run against real servers rather than mocks — a real JWKS, a real Keycloak, a
 real MQTT broker that routes, real TLS handshakes, a real multicast group. Three further harnesses
 are `#[ignore]`d because they are measurements rather than assertions: load, interoperability
@@ -218,10 +218,15 @@ $ cargo test --all-features --test broker -- --ignored --nocapture
 exchange. Both skip, loudly, without Docker.
 
 CI holds `cargo fmt --check`, clippy and rustdoc at `-D warnings`, every feature combination via
-`cargo hack`, `thumbv7em-none-eabihf` and `wasm32-unknown-unknown` builds, all three checks against
-the specification — the payload enumerations, the wire model and the routed paths — `cargo deny`
-over advisories, licences, banned crates and registries with a CycloneDX SBOM per build, and a
-conformance run against the freshly built binary.
+`cargo hack`, `thumbv7em-none-eabihf` and `wasm32-unknown-unknown` builds, four checks against
+the specification — the payload enumerations, the wire model, the routed paths, and every `MUST` and
+`SHALL` in the prose — `cargo deny` over advisories, licences, banned crates and registries with a
+CycloneDX SBOM per build, and a conformance run against the freshly built binary.
+
+**Every requirement is traced.** `cargo xtask trace` matches every `MUST` and `SHALL` in the
+Definitions and the notifier binding document against the clause citations in the source: **34 of
+34**, nothing exempted. Two sibling checks hold the same shape — every `problem.type` URI resolves,
+and the storage suite calls every method of the storage trait.
 
 ## Specification
 
@@ -244,7 +249,8 @@ Alliance.
 
 The most useful thing anyone can send is a disagreement found by running `openadr conformance`
 against a real VTN — see [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities go through
-[SECURITY.md](SECURITY.md), privately.
+[SECURITY.md](SECURITY.md), privately. What changed between releases is in
+[CHANGELOG.md](CHANGELOG.md).
 
 ## Licence
 

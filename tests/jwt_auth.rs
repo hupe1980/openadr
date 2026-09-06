@@ -15,6 +15,7 @@ use std::sync::{
     Arc,
     atomic::{AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
 use axum::{Json, Router, extract::State, routing::get};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
@@ -316,6 +317,75 @@ async fn an_unknown_key_id_refetches_once_and_then_stops() {
             .await
             .is_ok()
     );
+}
+
+/// A revocation window shorter than the anti-amplification window must not lock everyone out.
+///
+/// `refresh_after` bounds how long a *withdrawn* key keeps working, so an operator who wants fast
+/// revocation turns it down. `min_refresh_interval` bounds how often an unknown `kid` may provoke a
+/// fetch. Set the first below the second and every request lands in the gap between them: the cache
+/// is stale, so the fast path declines, and it is too recent to refetch — and the key the token was
+/// actually signed with is sitting in the cache the whole time. Refusing there takes the VTN's
+/// authentication down entirely, on a configuration that reads like caution (D-121's neighbour, and
+/// the same shape: a guard answering a question it was not asked).
+#[tokio::test]
+async fn a_stale_cache_still_serves_a_key_it_holds() {
+    let server = Jwks::serve(json!({"keys": [jwk(KID, json!({}))]})).await;
+    let auth = JwtAuthenticator::new(
+        JwtConfig::new(&server.url, "https://sso.test/token")
+            .with_issuer(ISSUER)
+            .with_audiences([AUDIENCE]),
+    )
+    .unwrap();
+
+    // Prime the cache, then step into the gap.
+    assert!(
+        auth.authenticate(Some(&token(valid_claims())))
+            .await
+            .is_ok()
+    );
+    assert_eq!(server.fetches.load(Ordering::SeqCst), 1);
+
+    let auth = {
+        let mut config = JwtConfig::new(&server.url, "https://sso.test/token")
+            .with_issuer(ISSUER)
+            .with_audiences([AUDIENCE]);
+        // Stale immediately, and rate-limited for a minute.
+        config.refresh_after = Duration::from_nanos(1);
+        config.min_refresh_interval = Duration::from_secs(60);
+        JwtAuthenticator::new(config).unwrap()
+    };
+    // One fetch to fill the cache; every later token finds it stale and rate-limited.
+    assert!(
+        auth.authenticate(Some(&token(valid_claims())))
+            .await
+            .is_ok()
+    );
+    let after_priming = server.fetches.load(Ordering::SeqCst);
+    for _ in 0..5 {
+        assert!(
+            auth.authenticate(Some(&token(valid_claims())))
+                .await
+                .is_ok(),
+            "a key the cache holds was refused because the cache was stale and rate-limited"
+        );
+    }
+    assert_eq!(
+        server.fetches.load(Ordering::SeqCst),
+        after_priming,
+        "the rate limit still holds: a stale cache served the key rather than refetching"
+    );
+
+    // And a `kid` it does not hold is still refused rather than served from anywhere.
+    let mut header = Header::new(Algorithm::ES256);
+    header.kid = Some("not-in-the-set".to_string());
+    let unknown = jsonwebtoken::encode(
+        &header,
+        &valid_claims(),
+        &EncodingKey::from_ec_der(&der(PRIVATE_KEY)),
+    )
+    .unwrap();
+    assert!(auth.authenticate(Some(&unknown)).await.is_err());
 }
 
 #[tokio::test]

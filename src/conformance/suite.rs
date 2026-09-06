@@ -379,7 +379,7 @@ pub fn checks() -> &'static [Check] {
         },
         Check {
             id: "program-name-lookup",
-            clause: "[extension] specification#418",
+            clause: "[extension] not in openadr3.yaml",
             title: "GET /programs?programName= finds one programme without paging",
             severity: Severity::Extension,
             needs: Needs::BusinessLogic,

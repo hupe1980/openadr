@@ -163,9 +163,8 @@ pub fn order_by_creation<T>(items: &mut [T], key: impl Fn(&T) -> (Timestamp, &Ob
 pub struct ProgramQuery {
     /// Exact-match a programme name.
     ///
-    /// Not in the specification; proposed as an addition (oadr3-org/specification#418) and already
-    /// implemented by public price servers, where paginating hundreds of tariffs to find one by
-    /// name is the difference between one request and twenty.
+    /// Not declared by `openadr3.yaml`. Paginating hundreds of tariffs to find one by name is the
+    /// difference between one request and twenty, which is why this VTN accepts it.
     pub program_name: Option<ProgramName>,
     /// Who is asking, and for which targets.
     pub access: Access,

@@ -1,8 +1,13 @@
 //! Turning every failure into the specification's `problem` object.
 //!
-//! The specification requires a problem body on every 4xx and 5xx. Handlers therefore never build
-//! responses by hand: they return [`ApiError`], and the single [`IntoResponse`] impl below decides
-//! the status, the body, and what gets logged.
+//! `[Def §Problem]`: on 40x and 500 responses a VTN answers with a `problem` object carrying details
+//! of the error. Handlers therefore never build responses by hand — they return [`ApiError`], and
+//! the single [`IntoResponse`] impl below decides the status, the body, and what gets logged.
+//!
+//! That covers everything a *handler* produces. The errors a middleware produces — a body over the
+//! limit, a request that timed out, a method the router does not have — never reach an `ApiError`,
+//! and are rewritten into the same shape by `layer_problem` in
+//! [`api`](super::api), outside the layers whose bare answers it has to catch (D-108).
 
 use axum::{
     Json,
@@ -220,8 +225,59 @@ mod tests {
         let p = ApiError::MissingScope(Scope::WriteEvents).problem();
         assert_eq!(
             p.r#type.as_deref(),
-            Some("https://openadr.dev/problems/missing-scope")
+            Some("https://hupe1980.github.io/openadr/problems/missing-scope")
         );
         assert!(p.detail.unwrap().contains("write_events"));
+    }
+
+    /// One of every variant, so the registry and the code cannot drift apart silently.
+    ///
+    /// A `type` URI is only worth minting if it resolves, and it resolves because
+    /// `PROBLEM_TYPES` is published as a redirect per slug. A variant whose slug is missing here
+    /// would serve clients a URI that documents nothing.
+    #[test]
+    fn every_variant_mints_a_published_type() {
+        use crate::model::{ObjectId, ObjectType, problem::PROBLEM_TYPES};
+
+        let id = ObjectId::new("object-0000000000").unwrap();
+        let errors = [
+            ApiError::BadRequest("x".into()),
+            ApiError::UnsupportedMediaType("x".into()),
+            ApiError::PayloadTooLarge("x".into()),
+            ApiError::InvalidPayload(Vec::new()),
+            ApiError::Unauthorized(AuthError::Missing),
+            ApiError::MissingScope(Scope::WriteEvents),
+            ApiError::Forbidden("x".into()),
+            ApiError::NotFound {
+                object_type: ObjectType::Event,
+                id: id.clone(),
+            },
+            ApiError::NoSuchRoute,
+            ApiError::NotImplemented("x".into()),
+            ApiError::Internal("x".into()),
+            ApiError::Unavailable("x".into()),
+            ApiError::Storage(StorageError::NotFound {
+                object_type: ObjectType::Event,
+                id,
+            }),
+            ApiError::Storage(StorageError::Conflict {
+                object_type: ObjectType::Event,
+                field: "f",
+                value: "v".into(),
+            }),
+            ApiError::Storage(StorageError::DanglingReference {
+                field: "f",
+                value: "v".into(),
+            }),
+            ApiError::Storage(StorageError::Unavailable("x".into())),
+        ];
+
+        for error in &errors {
+            let slug = error.slug();
+            assert!(
+                PROBLEM_TYPES.contains(&slug),
+                "{slug} is minted but not published; add it to PROBLEM_TYPES and the registry page"
+            );
+        }
     }
 }

@@ -245,11 +245,28 @@ impl PostgresStorage {
         Ok(Arc::new(Self::open(url).await?))
     }
 
+    /// Apply the schema, under an advisory lock so that two instances may start at once.
+    ///
+    /// `CREATE TABLE IF NOT EXISTS` is not safe to run concurrently on PostgreSQL: the existence
+    /// check and the creation are not one step, so two sessions racing on a table both decide to
+    /// create it and the loser fails with an error naming an internal catalogue index. This is the
+    /// shared-VTN backend, so two instances starting at once is a rolling deploy rather than an edge
+    /// case (D-125).
+    ///
+    /// The lock is transaction-scoped, so it is released on commit or on the connection dying and a
+    /// process killed mid-schema blocks nobody.
     async fn apply_schema(&self) -> Result<(), StorageError> {
-        sqlx::raw_sql(SCHEMA)
-            .execute(&self.pool)
+        /// `openadr` schema lock. Arbitrary, and only ever compared with itself.
+        const SCHEMA_LOCK: i64 = 0x0AD3_5CE3_0000_0001_u64 as i64;
+
+        let mut tx = self.pool.begin().await.map_err(db)?;
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(SCHEMA_LOCK)
+            .execute(&mut *tx)
             .await
             .map_err(db)?;
+        sqlx::raw_sql(SCHEMA).execute(&mut *tx).await.map_err(db)?;
+        tx.commit().await.map_err(db)?;
         Ok(())
     }
 
@@ -872,10 +889,14 @@ impl Storage for PostgresStorage {
         } else {
             Self::cascaded_from_program(&mut tx, object_id).await?
         };
-        // Events and reports go by cascade; their target rows are not reachable from one.
+        // Events, reports and programme-scoped subscriptions go by cascade. `object_target` is
+        // polymorphic and so has no foreign key to be cascaded *through*: every kind of row a
+        // cascade removes has to be cleared here by hand. Reports carry no targets; events and
+        // subscriptions both do, and the subscriptions were missed (D-123).
         sqlx::query(
             "DELETE FROM object_target WHERE object_id IN \
-             (SELECT id FROM event WHERE program_id = $1)",
+             (SELECT id FROM event WHERE program_id = $1 \
+              UNION ALL SELECT id FROM subscription WHERE program_id = $1)",
         )
         .bind(object_id.as_str())
         .execute(&mut *tx)
@@ -2439,12 +2460,10 @@ impl Storage for PostgresStorage {
 mod tests {
     use super::*;
 
-    fn configured() -> Option<String> {
-        std::env::var("OPENADR_TEST_POSTGRES").ok()
-    }
-
-    async fn fresh() -> PostgresStorage {
-        let store = PostgresStorage::open(&configured().unwrap()).await.unwrap();
+    /// A clean store in a database named after the test that asked for it.
+    async fn fresh(test: &str) -> PostgresStorage {
+        let url = test_database_for(test).await.expect("a Postgres server");
+        let store = PostgresStorage::open(&url).await.unwrap();
         store.truncate_all().await.unwrap();
         store
     }
@@ -2477,10 +2496,10 @@ mod tests {
     /// The reason this backend exists for a busy VTN.
     #[tokio::test]
     async fn two_dispatchers_claim_disjoint_batches() {
-        if configured().is_none() {
+        if test_server().await.is_none() {
             return;
         }
-        let store = fresh().await;
+        let store = fresh("dispatchers").await;
         store
             .enqueue((0..8).map(delivery).collect(), now())
             .await
@@ -2514,10 +2533,10 @@ mod tests {
     /// A write should wake a dispatcher, not make it wait for the poll interval.
     #[tokio::test]
     async fn a_write_wakes_a_waiting_dispatcher() {
-        if configured().is_none() {
+        if test_server().await.is_none() {
             return;
         }
-        let store = Arc::new(fresh().await);
+        let store = Arc::new(fresh("listen_notify").await);
 
         // Prime the listener, so the wait under test is not measuring a connection setup.
         store
@@ -2557,7 +2576,35 @@ mod tests {
     /// The PostgreSQL the storage suite runs against, matching `.github/workflows/ci.yml`.
     const POSTGRES_TAG: &str = "17-alpine";
 
-    async fn test_database() -> Option<String> {
+    /// A database of this test's own, on whatever server `test_server` found.
+    ///
+    /// Every Postgres test here starts from an empty database, and emptying one means
+    /// `TRUNCATE … CASCADE`, which takes an `ACCESS EXCLUSIVE` lock on every table it names. Two
+    /// tests sharing a database therefore do not merely interfere — they deadlock, and PostgreSQL
+    /// picks one to kill. Cargo runs tests in parallel, so sharing is the default rather than the
+    /// accident, and the failure arrives as `deadlock detected` in whichever test lost.
+    ///
+    /// Created once per name and reused, so a suite that builds a backend per behaviour pays for it
+    /// once. `CREATE DATABASE` on one that exists is the reuse, not an error.
+    async fn test_database_for(name: &str) -> Option<String> {
+        use sqlx::Connection as _;
+
+        let server = test_server().await?;
+        let database = format!("openadr_test_{name}");
+        let mut conn = sqlx::PgConnection::connect(&server).await.ok()?;
+        // Racing another test on the same name is not possible — each names itself — but racing the
+        // *server's* catalogue with another `CREATE DATABASE` is, so a duplicate is reuse.
+        let _ = sqlx::query(&format!("CREATE DATABASE {database}"))
+            .execute(&mut conn)
+            .await;
+        let _ = conn.close().await;
+
+        let (base, _) = server.rsplit_once('/')?;
+        Some(format!("{base}/{database}"))
+    }
+
+    /// The PostgreSQL server, from the environment or from a container started here.
+    async fn test_server() -> Option<String> {
         use tokio::sync::OnceCell;
 
         if let Ok(url) = std::env::var("OPENADR_TEST_POSTGRES") {
@@ -2600,9 +2647,39 @@ mod tests {
             .map(|(_, url)| url.clone())
     }
 
+    /// A cascade leaves no target rows behind.
+    ///
+    /// The same assertion the SQLite backend makes, for the same reason: `object_target` is
+    /// polymorphic, so it carries no foreign key and no cascade can reach it — every kind of row a
+    /// cascade removes has to be cleared by hand, and the programme-scoped subscriptions were not
+    /// (D-123). The storage suite structurally cannot state this: the rows are unreachable through
+    /// the trait, and the in-memory backend has no such table.
+    #[tokio::test]
+    async fn deleting_a_programme_leaves_no_orphaned_target_rows() {
+        if test_server().await.is_none() {
+            return;
+        }
+        let store = fresh("orphans").await;
+
+        let program_id = super::super::suite::seed_a_cascade_of_targeted_children(&store).await;
+        store
+            .delete_program(&program_id, &Fanout::none())
+            .await
+            .unwrap();
+
+        let orphans: i64 = sqlx::query_scalar(super::super::suite::ORPHANED_TARGETS)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            orphans, 0,
+            "a programme's cascade left {orphans} target rows pointing at objects that are gone"
+        );
+    }
+
     // The conformance suite, against a real Postgres — the one CI provides, or one started here.
     super::super::suite::run_suite!(@optional async {
-        let url = test_database().await?;
+        let url = test_database_for("suite").await?;
         let store = PostgresStorage::open(&url).await.unwrap();
         // Each behaviour starts from an empty database, exactly as the other backends do.
         store.truncate_all().await.unwrap();

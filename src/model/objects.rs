@@ -3,6 +3,13 @@
 //! Every object follows the same shape as the specification's `allOf` composition: VTN-provisioned
 //! metadata (`id`, timestamps, `objectType`) plus the client-provided request body, which is a
 //! separate type so that a `POST` body cannot even name a field the client is not allowed to set.
+//!
+//! That split is how two requirements are met by construction rather than by a check.
+//! `[Def §Object Metadata]` — the VTN populates `id`, `createdDateTime`, `modificationDateTime` and
+//! `objectType` on creation — is the response type's business, and every response type carries all
+//! four. `[Def §POST and PUT]` — the VTN ignores those fields on the way in — needs no ignoring:
+//! the request types have no such members, so there is nothing for a client to send and nothing for
+//! a handler to remember to drop.
 
 use crate::std_shim::{String, Vec};
 use core::{cmp::Ordering, fmt, str::FromStr};

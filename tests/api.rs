@@ -31,6 +31,9 @@ const VEN_A: &str = "ven-a-secret";
 const VEN_B: &str = "ven-b-secret";
 /// A VEN that exists but has been granted no targets.
 const VEN_C: &str = "ven-c-secret";
+/// A credential carrying `read_bl` and nothing else — the scope the five collection-topic
+/// endpoints ask for, and the one whose name invites it to be read as an identity (D-121).
+const TOPICS_ONLY: &str = "topics-only-secret";
 
 fn now() -> Timestamp {
     "2026-02-11T06:00:00Z".parse().unwrap()
@@ -61,7 +64,12 @@ impl Harness {
             .with_business_logic(BL, ClientId::new("bl").unwrap())
             .with_ven(VEN_A, ClientId::new("client-a").unwrap())
             .with_ven(VEN_B, ClientId::new("client-b").unwrap())
-            .with_ven(VEN_C, ClientId::new("client-c").unwrap());
+            .with_ven(VEN_C, ClientId::new("client-c").unwrap())
+            .with_token(
+                TOPICS_ONLY,
+                ClientId::new("client-topics").unwrap(),
+                openadr::vtn::auth::Scopes::new([openadr::vtn::auth::Scope::ReadBl]),
+            );
 
         let vtn = Vtn::builder()
             .storage(storage.clone())
@@ -614,6 +622,66 @@ async fn one_ven_cannot_read_anothers_report_by_id() {
     assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
+/// `read_bl` names five endpoints. It must not name the object graph as well.
+///
+/// The scope gates the collection-wide MQTT topic listings `[API listAllMqttNotifierTopics*]` and
+/// is the only scope whose spelling suggests an identity. Reading it as one made a credential
+/// minted to enumerate broker topics into business logic — the one role object privacy does not
+/// apply to — so it read every VEN's meter data and every targeted event in the VTN (D-121).
+#[tokio::test]
+async fn a_notifier_topic_credential_is_not_business_logic() {
+    let h = Harness::new();
+    let (_, event_id) = h.seed().await;
+    let (_, report) = h
+        .post(
+            "/reports",
+            VEN_A,
+            json!({ "eventID": event_id, "clientName": "ven-a", "resources": [] }),
+        )
+        .await;
+    let report_id = report["id"].as_str().unwrap();
+
+    // Somebody else's report is not this credential's to read, by id or in a listing.
+    let (status, _) = h
+        .get(&format!("/reports/{report_id}"), Some(TOPICS_ONLY))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_FOUND,
+        "read_bl read a report it does not own"
+    );
+    let (status, reports) = h.get("/reports", Some(TOPICS_ONLY)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        reports.as_array().map(Vec::len),
+        Some(0),
+        "read_bl listed reports it does not own: {reports}"
+    );
+
+    // Nor is a targeted event, which `seed` targets at `group1`.
+    let (status, events) = h.get("/events?targets=group1", Some(TOPICS_ONLY)).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        events.as_array().map(Vec::len),
+        Some(0),
+        "read_bl read a targeted event: {events}"
+    );
+
+    // And it still does the one thing it is for. No broker is configured here, so the answer is
+    // `501` rather than `403`: the scope passed, and the deployment has nothing to list.
+    let (status, _) = h
+        .get("/notifiers/mqtt/topics/reports", Some(TOPICS_ONLY))
+        .await;
+    assert_eq!(
+        status,
+        StatusCode::NOT_IMPLEMENTED,
+        "read_bl was refused the endpoint it exists for"
+    );
+    // Which is a different answer from the one a VEN gets there.
+    let (status, _) = h.get("/notifiers/mqtt/topics/reports", Some(VEN_A)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}
+
 // ---------------------------------------------------------------------------
 // Validation
 // ---------------------------------------------------------------------------
@@ -656,6 +724,77 @@ async fn an_unresolvable_event_is_rejected_at_the_boundary() {
         .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert!(body["detail"].as_str().unwrap().contains("resolvable"));
+}
+
+/// An event whose durations run backwards is refused, not stored.
+///
+/// The schema's `duration` pattern begins `^(-?)P`, so `-PT1H` is well formed and the wire model
+/// parses it. Stored, such an event is inert and silent: its active window ends before it begins, so
+/// `?active=true` never returns it and no VEN following the collection ever sees it — a `201`
+/// followed by nothing at all, for ever, with nothing anywhere saying why (D-126).
+#[tokio::test]
+async fn an_event_whose_durations_run_backwards_is_refused() {
+    let h = Harness::new();
+    let (program_id, _) = h.seed().await;
+
+    for (field, body) in [
+        (
+            "intervalPeriod.duration",
+            json!({
+                "programID": program_id,
+                "intervalPeriod": { "start": "2026-02-11T12:00:00Z", "duration": "-PT15M" },
+                "intervals": [{ "id": 0, "payloads": [] }],
+            }),
+        ),
+        (
+            "duration",
+            json!({
+                "programID": program_id,
+                "duration": "-PT1H",
+                "intervalPeriod": { "start": "2026-02-11T12:00:00Z", "duration": "PT15M" },
+                "intervals": [{ "id": 0, "payloads": [] }],
+            }),
+        ),
+        (
+            "intervals[0].intervalPeriod.randomizeStart",
+            json!({
+                "programID": program_id,
+                "intervalPeriod": { "start": "2026-02-11T12:00:00Z", "duration": "PT15M" },
+                "intervals": [{
+                    "id": 0,
+                    "payloads": [],
+                    "intervalPeriod": { "randomizeStart": "-PT5M" },
+                }],
+            }),
+        ),
+    ] {
+        let (status, response) = h.post("/events", BL, body).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{field}: {response}");
+        let detail = response["detail"].as_str().unwrap_or_default();
+        assert!(
+            detail.contains(field),
+            "the error should name {field}, and said: {detail}"
+        );
+    }
+
+    // The same shapes with positive durations are accepted, so the check is about the sign.
+    let (status, response) = h
+        .post(
+            "/events",
+            BL,
+            json!({
+                "programID": program_id,
+                "duration": "PT1H",
+                "intervalPeriod": {
+                    "start": "2026-02-11T12:00:00Z",
+                    "duration": "PT15M",
+                    "randomizeStart": "PT5M",
+                },
+                "intervals": [{ "id": 0, "payloads": [] }],
+            }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::CREATED, "{response}");
 }
 
 #[tokio::test]
@@ -1596,7 +1735,7 @@ async fn the_openapi_document_describes_only_endpoints_that_exist() {
             if status == StatusCode::NOT_FOUND {
                 let (_, problem, _) = h.send(method.clone(), &path, Some(BL), None).await;
                 assert_ne!(
-                    problem["type"], "https://openadr.dev/problems/no-such-route",
+                    problem["type"], "https://hupe1980.github.io/openadr/problems/no-such-route",
                     "the document describes {method} {template}, which this VTN does not route"
                 );
             }
@@ -1648,7 +1787,7 @@ async fn an_error_a_layer_produced_is_still_a_problem_body() {
     assert_eq!(problem["status"], 413);
     assert_eq!(
         problem["type"],
-        "https://openadr.dev/problems/payload-too-large"
+        "https://hupe1980.github.io/openadr/problems/payload-too-large"
     );
     // The same traceability every other error has: without it the one error an operator cannot
     // reproduce is the one they cannot look up either.

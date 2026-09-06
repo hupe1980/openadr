@@ -168,13 +168,14 @@ impl Scopes {
     ///
     /// The specification never labels a token "BL" or "VEN"; the distinction falls out of the
     /// scopes. Anything that can write programmes or events, or read everything, is business logic.
+    ///
+    /// `read_bl` is deliberately **not** in that list, though its name suggests otherwise. It gates
+    /// exactly five endpoints — the collection-wide MQTT topic listings — and nothing else
+    /// `[API listAllMqttNotifierTopics*]`. Reading it as an identity rather than as a permission
+    /// made a credential minted to enumerate broker topics into one that read every VEN's reports,
+    /// because business logic is the role object privacy does not apply to (D-121).
     pub fn is_business_logic(&self) -> bool {
-        self.contains_any(&[
-            Scope::ReadAll,
-            Scope::ReadBl,
-            Scope::WritePrograms,
-            Scope::WriteEvents,
-        ])
+        self.contains_any(&[Scope::ReadAll, Scope::WritePrograms, Scope::WriteEvents])
     }
 }
 
@@ -462,6 +463,21 @@ mod tests {
         assert!(Scopes::new(Scope::BUSINESS_LOGIC).is_business_logic());
         assert!(!Scopes::new(Scope::VEN).is_business_logic());
         assert!(!Scopes::none().is_business_logic());
+    }
+
+    /// `read_bl` is a permission on five endpoints, not the business-logic identity.
+    ///
+    /// Reading it as an identity is an escalation rather than a widening, because business logic is
+    /// precisely the role object privacy does not apply to: a token minted to enumerate broker
+    /// topics would read every VEN's reports and every targeted event in the VTN (D-121).
+    #[test]
+    fn read_bl_alone_is_not_business_logic() {
+        let only_read_bl = Scopes::new([Scope::ReadBl]);
+        assert!(!only_read_bl.is_business_logic());
+        // And it is still what the collection-topic endpoints ask for.
+        assert!(only_read_bl.contains(Scope::ReadBl));
+        // A real business-logic credential carries both, and is unaffected.
+        assert!(Scopes::new([Scope::ReadAll, Scope::ReadBl]).is_business_logic());
     }
 
     #[test]
