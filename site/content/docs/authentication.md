@@ -159,6 +159,13 @@ that a stream of tokens naming random key ids cannot turn the VTN into a load ge
 your authorization server. The cache also expires, which is what bounds how long a *withdrawn* key
 keeps working — a revocation window rather than a cache tuning knob.
 
+The two windows have separate anchors: revocation runs from the last *successful* fetch, the rate
+limit from the last **attempt**, successful or not — so the limit still holds while your
+authorization server is down, which is when it matters most. While the key set cannot be refreshed, a
+token whose key the VTN holds is accepted, and one whose key it does not is a `503` rather than a
+`401`: the VTN cannot tell whether the credential is good, and saying it is bad sends you looking in
+the wrong place.
+
 **`clientID` is a configurable claim.** Keycloak puts it in `azp`, many servers in `client_id`, some
 only in `sub`, and the specification says only that the VTN discovers it "by means not specified
 here". The default order is `azp`, `client_id`, `sub`. A token with no recognisable client identity

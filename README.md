@@ -69,7 +69,8 @@ the loop re-reads from the VTN, and the payload is never deserialised. A broker 
 latency and cannot cost it correctness.
 
 **It runs where the load is.** The wire model, payload schema and domain core are `no_std` + alloc
-and build for `thumbv7em-none-eabihf` and WebAssembly. No C toolchain anywhere in the tree.
+and build for `thumbv7em-none-eabihf` and WebAssembly. No C *library* to install for any feature: no
+OpenSSL to find, no Avahi, nothing for `pkg-config` to locate.
 
 ## Install
 
@@ -191,7 +192,7 @@ Alliance test tool. MQTT 5, ACME, mapping a client certificate to a `clientID`, 
 webhook receiver on the VEN side are not written.
 [The full picture](https://hupe1980.github.io/openadr/docs/status/).
 
-**466 tests**, and the distribution is the point: most of the effort is at the seams. Seventy
+**481 tests**, and the distribution is the point: most of the effort is at the seams. Seventy-one
 drive the real HTTP router; the storage conformance suite is 57 behaviours run against all three
 backends; and the rest run against real servers rather than mocks — a real JWKS, a real Keycloak, a
 real MQTT broker that routes, real TLS handshakes, a real multicast group. Three further harnesses
@@ -223,10 +224,17 @@ the specification — the payload enumerations, the wire model, the routed paths
 `SHALL` in the prose — `cargo deny` over advisories, licences, banned crates and registries with a
 CycloneDX SBOM per build, and a conformance run against the freshly built binary.
 
-**Every requirement is traced.** `cargo xtask trace` matches every `MUST` and `SHALL` in the
-Definitions and the notifier binding document against the clause citations in the source: **34 of
-34**, nothing exempted. Two sibling checks hold the same shape — every `problem.type` URI resolves,
-and the storage suite calls every method of the storage trait.
+**The instrument is measured too.** A conformance suite that cannot fail measures nothing, so the kit
+is run against a table of deliberately broken VTNs, each fault naming exactly the checks that must
+catch it: **47 of the 48 checks are proven able to fail**, and the one that is not is named with its
+reason.
+
+**Every requirement is traced to something that runs.** `cargo xtask trace` matches every `MUST` and
+`SHALL` in the Definitions and the notifier binding document against the citations in the source, and
+grades each by where it is written — a conformance check, a test, or a doc comment. **34 of 34 are
+named by a check or a test**, nothing exempted, and the number is a ratchet CI enforces. Two sibling
+checks hold the same shape: every `problem.type` URI resolves, and the storage suite calls every
+method of the storage trait.
 
 ## Specification
 

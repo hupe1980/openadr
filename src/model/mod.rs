@@ -49,6 +49,17 @@ pub use problem::Problem;
 pub use time::{Duration, SCHEMA_DURATION_PATTERN, StartTime, TimeError, Timestamp};
 pub use values::{PayloadType, Point, ReadingType, Unit, Value, ValuesMap};
 
+/// The page size the schema caps `limit` at `[API /programs limit]`.
+///
+/// One number for three layers: the VTN clamps a request to it, the client pages with it, and the
+/// VEN runtime compares a page's length against it to decide whether one page was the whole
+/// collection.
+///
+/// Note what the schema does **not** say: there is a maximum for `limit` and no *default*. A VTN
+/// sent no `limit` may answer with a page of any size, so "was that page full?" is only a sound
+/// question when the reader named the limit itself.
+pub const MAX_PAGE_LIMIT: usize = 50;
+
 /// Deserialize `null` as the type's default instead of failing.
 ///
 /// The specification marks almost every optional array `nullable: true, default: null`, so a

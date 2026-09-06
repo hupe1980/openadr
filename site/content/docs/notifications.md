@@ -89,6 +89,31 @@ fn check(headers: &HeaderMap, body: &[u8], key: &[u8]) -> Result<(), SignatureEr
 Verify over the **raw bytes**, not a re-serialised body: JSON key order and number formatting are
 not preserved by a round trip through a parser, and a signature is over bytes.
 
+### Answering the echo challenge
+
+The first thing a receiver meets, before any signature: a VTN sends a `GET` to the callback URL
+carrying an `echo` parameter, and the endpoint must answer `200` with that value as its body. Fail it
+and the subscription is never created. That half ships too, on the same terms — `no_std`, no HTTP
+stack, no `vtn`:
+
+```rust
+use openadr::webhook;
+
+// The GET handler for your callback URL. `query` is everything after the `?`.
+fn on_get(query: &str) -> (StatusCode, String) {
+    match webhook::echo_challenge(query) {
+        Some(challenge) => (StatusCode::OK, challenge),
+        None => (StatusCode::NOT_FOUND, String::new()),
+    }
+}
+```
+
+Answer with **exactly** what it returns — no wrapping object, no extra content. The value is
+percent-decoded, because the Definitions say only "random generated string value" and a receiver that
+echoed the encoded form back would pass here and fail against a VTN whose alphabet is wider.
+
+The same handler serves both methods: a `GET` is the challenge, a `POST` is a notification.
+
 ### The threat model is the VTN itself
 
 A subscriber names a URL and the VTN then makes requests to it from inside the operator's network.
@@ -126,7 +151,7 @@ configurable:
 DispatchConfig {
     batch: 32,                                   // entries claimed per pass
     concurrency: 8,                              // deliveries in flight at once
-    lease: Duration::from_secs(60),              // before another dispatcher may take an entry
+    attempt_timeout: Duration::from_secs(15),    // one delivery's budget
     retry: RetryPolicy {
         max_attempts: 8,
         base_delay: Duration::from_secs(2),      // doubling
@@ -135,6 +160,15 @@ DispatchConfig {
     ..Default::default()
 }
 ```
+
+There is no `lease` to set. How long a claim is held before another dispatcher may take the entry is
+**derived**: `config.lease()` is the worst case a batch can take — `batch / concurrency` waves of
+`attempt_timeout` — plus one wave of slack. Two configurable bounds on one quantity eventually
+disagree, and a batch that outlives its lease is delivered twice.
+
+`attempt_timeout` is enforced by the dispatcher rather than left to the transport, so a transport
+with a longer timeout, or none, cannot escape it. An attempt that runs past it is a retriable failure
+like any other.
 
 A `4xx` other than `408` or `429` is **never retried**: the receiver is saying "not this, ever", and
 seven more attempts are only traffic. Everything else is worth another try.
@@ -349,6 +383,13 @@ That costs one round trip per notification, and it is the whole reason the outbo
 `MqttConfig::qos = AtMostOnce` is available for a deployment that would rather have the throughput
 and knows what it is giving up.
 
+**The round trips overlap.** Correlating a publish with its acknowledgement needs only that when the
+client reports "a packet went out with identifier *n*", the publisher reading it knows the packet is
+theirs — a property of the microseconds between queueing and writing, not of the broker round trip.
+So only the first is serialised, and as many publishes are outstanding at the broker as
+`DispatchConfig::concurrency` allows. Serialising the round trip instead would make the time to clear
+a batch the *sum* of its publish timeouts, which is what `concurrency` exists to prevent.
+
 Retain is **off by default**. Retained messages let a reconnecting VEN see the last notification per
 topic, but the specification tells clients to re-`GET` on reconnect rather than trust one, and a
 retained *delete* on a per-VEN topic outlives the grant that put it there. `--mqtt-retain` turns it
@@ -439,11 +480,11 @@ Every `Delivery` carries a `Route` — `Webhook { callback_url, bearer_token }` 
 never both and never neither — and every route names a `Channel`. A delivery **no** transport claims
 fails permanently and is counted as dead, where an operator sees it.
 
-That is not defensive tidiness. Before it existed, a VTN advertising an MQTT binding with no
-publisher behind it handed every broker notification to the webhook transport, which answered `Ok`
-because the delivery genuinely was not its — and the dispatcher, which reads `Ok` as "delivered",
-deleted the row. Every broker notification was lost, silently, through the machinery built to make
-exactly that impossible.
+That is not defensive tidiness. Without it, a VTN advertising an MQTT binding with no publisher
+behind it hands every broker notification to the webhook transport, which answers `Ok` because the
+delivery genuinely is not its — and the dispatcher, reading `Ok` as "delivered", deletes the row.
+Every broker notification is lost silently, through the machinery built to make exactly that
+impossible.
 
 
 ## Subscribing, from the VEN

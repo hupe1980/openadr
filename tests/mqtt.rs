@@ -26,11 +26,15 @@ use axum::{
 };
 use openadr::{
     core::FixedClock,
-    model::{ClientId, MqttAuthentication, MqttNotifierBinding, Serialization, Timestamp},
+    model::{
+        ClientId, MqttAuthentication, MqttNotifierBinding, Operation, Program, ProgramRequest,
+        Serialization, Timestamp,
+        notification::{AnyObject, Notification},
+    },
     vtn::{
         Vtn, VtnConfig,
         auth::StaticTokenAuth,
-        notify::{MqttConfig, MqttNotifier, Notifiers},
+        notify::{Delivery, MqttConfig, MqttNotifier, Notifier, Notifiers, Route},
         store::MemoryStorage,
     },
 };
@@ -45,6 +49,63 @@ const PREFIX: &str = "openadr3";
 
 fn now() -> Timestamp {
     "2026-02-11T06:00:00Z".parse().unwrap()
+}
+
+#[tokio::test]
+async fn publishes_overlap_rather_than_queueing_behind_one_anothers_round_trips() {
+    // A broker that will not acknowledge anything until four publishes have arrived. A transport
+    // that waits for each `PUBACK` before queueing the next packet can never send the second, so
+    // the first times out; one that overlaps them gets all four acknowledged together.
+    //
+    // This is not a micro-optimisation. `DispatchConfig::concurrency` exists so that a batch cannot
+    // take the *sum* of its attempts and outlive its own lease, and a transport that serialises
+    // behind its own lock reinstates exactly that for every broker delivery — silently, and only on
+    // the deployments with enough VENs for it to matter (D-134).
+    const CONCURRENT: usize = 4;
+    let broker = Broker::start_withholding_acks(CONCURRENT).await;
+
+    let notifier = MqttNotifier::connect(MqttConfig {
+        // Short, so that a regression is a fast failure rather than a fifteen-second one.
+        publish_timeout: std::time::Duration::from_secs(5),
+        ..MqttConfig::new(broker.url())
+    })
+    .unwrap();
+
+    let deliveries: Vec<Delivery> = (0..CONCURRENT)
+        .map(|i| Delivery {
+            subscription_id: None,
+            route: Route::Topic {
+                topic: format!("{PREFIX}/programs/create/{i}"),
+            },
+            notification: Notification::new(
+                Operation::Create,
+                AnyObject::Program(Program {
+                    id: format!("prg-{i}").parse().unwrap(),
+                    created_date_time: now(),
+                    modification_date_time: now(),
+                    object_type: openadr::model::ObjectType::Program,
+                    content: ProgramRequest::new(format!("tariff-{i}").parse().unwrap()),
+                }),
+            ),
+        })
+        .collect();
+
+    let results = futures_util::future::join_all(
+        deliveries
+            .iter()
+            .map(|delivery| notifier.deliver(delivery, 1)),
+    )
+    .await;
+
+    for (i, result) in results.iter().enumerate() {
+        assert!(
+            result.is_ok(),
+            "delivery {i} failed: {:?} — the transport serialised its publishes behind one \
+             another's broker round trips",
+            result.as_ref().err()
+        );
+    }
+    assert_eq!(broker.published().len(), CONCURRENT);
 }
 
 /// One message the broker received.
@@ -584,6 +645,21 @@ async fn the_ven_connects_as_its_own_client_id_with_its_token_as_the_password() 
         Some(password.as_str()),
         "the broker password is not the token this client authenticates to the VTN with"
     );
+
+    // `[Notifiers §12.2]`: the token travels as the MQTT password, under the username the token
+    // proved. That is what the assertions above establish, and it is the authentication method
+    // `GET /notifiers` advertises `[Notifiers §12]`.
+    //
+    // `[Notifiers §11.2]`, `[Notifiers §22.9]` and `[Def §MQTT]`: "MQTT brokers and clients MUST
+    // support MQTT version 3.1.1 (or later)". Read off the CONNECT packet rather than off the
+    // client library's documentation — a version requirement satisfied by a dependency's default
+    // is one nobody notices changing.
+    let (name, level) = &ven_connection.protocol;
+    assert_eq!(name, "MQTT", "the CONNECT does not name the MQTT protocol");
+    assert!(
+        *level >= 4,
+        "the VEN connected with protocol level {level}; 4 is MQTT 3.1.1 and is the floor"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -701,6 +777,10 @@ struct Credentials {
     client_id: String,
     username: Option<String>,
     password: Option<String>,
+    /// The protocol name and level from the CONNECT variable header — `("MQTT", 4)` for MQTT
+    /// 3.1.1, `("MQTT", 5)` for MQTT 5. Read because the binding requires a version, and a version
+    /// requirement nothing reads off the wire is a requirement nothing checks.
+    protocol: (String, u8),
 }
 
 /// Every live subscription, so a publish can be delivered rather than merely counted.
@@ -717,6 +797,17 @@ struct Subscriber {
 
 impl Broker {
     async fn start() -> Self {
+        Self::start_withholding_acks(0).await
+    }
+
+    /// A broker that will not acknowledge a QoS 1 publish until `n` of them have arrived.
+    ///
+    /// The only way to state "these publishes overlapped" as a fact rather than as a stopwatch
+    /// reading. A publisher that waits for each acknowledgement before queueing the next one can
+    /// never reach the second publish, so the first one times out; one that pipelines gets all `n`
+    /// acknowledgements at once. No sleeps, and nothing that passes on a slow machine and fails on
+    /// a fast one.
+    async fn start_withholding_acks(n: usize) -> Self {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let received = Arc::new(Mutex::new(Vec::new()));
@@ -731,7 +822,7 @@ impl Broker {
                 let seen = seen.clone();
                 let subs = subs.clone();
                 tokio::spawn(async move {
-                    let _ = serve(socket, sink, seen, subs).await;
+                    let _ = serve(socket, sink, seen, subs, n).await;
                 });
             }
         });
@@ -775,6 +866,7 @@ async fn serve(
     sink: Arc<Mutex<Vec<Published>>>,
     seen: Arc<Mutex<Vec<Credentials>>>,
     subscribers: Subscribers,
+    withhold_acks_until: usize,
 ) -> std::io::Result<()> {
     let (mut reader, mut writer) = tokio::io::split(socket);
     let (outbound, mut inbox) = tokio::sync::mpsc::unbounded_channel::<(String, Vec<u8>)>();
@@ -818,6 +910,10 @@ async fn serve(
             let _ = writer.flush().await;
         }
     });
+
+    // Acknowledgements this connection is sitting on, and how many QoS 1 publishes it has seen.
+    let mut held: Vec<Vec<u8>> = Vec::new();
+    let mut confirmable = 0usize;
 
     loop {
         let mut first = [0u8; 1];
@@ -867,7 +963,16 @@ async fn serve(
                 }
                 if let Some(id) = packet_id {
                     let [hi, lo] = id.to_be_bytes();
-                    let _ = control.send(vec![0x40, 0x02, hi, lo]);
+                    let puback = vec![0x40, 0x02, hi, lo];
+                    confirmable += 1;
+                    if confirmable < withhold_acks_until {
+                        held.push(puback);
+                    } else {
+                        for earlier in held.drain(..) {
+                            let _ = control.send(earlier);
+                        }
+                        let _ = control.send(puback);
+                    }
                 }
             }
             // SUBSCRIBE → SUBACK. The filters are (topic, qos) pairs after the packet identifier.
@@ -907,6 +1012,8 @@ async fn serve(
 /// order: client id, will topic and message, username, password — each a length-prefixed string.
 fn parse_connect(body: &[u8]) -> Option<Credentials> {
     let name_len = u16::from_be_bytes([*body.first()?, *body.get(1)?]) as usize;
+    let name = String::from_utf8_lossy(body.get(2..2 + name_len)?).into_owned();
+    let level = *body.get(2 + name_len)?;
     // protocol name, protocol level, connect flags, keep-alive
     let mut cursor = 2 + name_len + 1;
     let flags = *body.get(cursor)?;
@@ -931,6 +1038,7 @@ fn parse_connect(body: &[u8]) -> Option<Credentials> {
         client_id,
         username,
         password,
+        protocol: (name, level),
     })
 }
 

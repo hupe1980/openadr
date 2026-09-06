@@ -98,7 +98,10 @@ impl Default for Page {
 
 impl Page {
     /// The schema's `maximum` for `limit`.
-    pub const MAX_LIMIT: usize = 50;
+    ///
+    /// The wire model's [`MAX_PAGE_LIMIT`](crate::model::MAX_PAGE_LIMIT), not a second copy of it:
+    /// the client pages with the same number and the VEN runtime compares against it.
+    pub const MAX_LIMIT: usize = crate::model::MAX_PAGE_LIMIT;
 
     /// Apply to an already-ordered slice.
     ///

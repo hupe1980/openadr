@@ -45,7 +45,7 @@
       <a class="button" href="{{ get_url(path='@/docs/_index.md') | safe }}">Documentation</a>
     </p>
     <div class="install">
-      <code>openadr = { version = "0.2", features = ["vtn", "postgres"] }</code>
+      <code>openadr = { version = "0.3", features = ["vtn", "postgres"] }</code>
     </div>
   </div>
 </section>
@@ -107,8 +107,9 @@
         not run is reported as skipped and never counted as a pass.
       </p>
       <p class="note">
-        Run against another implementation, it found six required divergences there — and two
-        defects here.
+        The suite is measured too: run against deliberately broken VTNs, 47 of the 48 checks are
+        proven able to fail. Run against another implementation, it found six required divergences
+        there — and two defects here.
       </p>
     </article>
 
@@ -175,7 +176,8 @@
       <p>
         The wire model, the payload schema and the domain core are <code>no_std</code> + alloc and
         build for <code>thumbv7em-none-eabihf</code> and WebAssembly — the appliance-class VEN the
-        specification's own security chapter has in mind. No C toolchain anywhere in the tree, and
+        specification's own security chapter has in mind. No C <em>library</em> has to be installed
+        for any feature: no OpenSSL, no Avahi, nothing for <code>pkg-config</code> to find, and
         <code>cargo deny</code> keeps it that way.
       </p>
     </article>
@@ -250,8 +252,9 @@ loop {
   <p>
     Registration, resource reconciliation, one conflict-resolved timeline per programme,
     <code>randomizeStart</code> applied from a seed, a clock-skew guard, and report scheduling that
-    survives a restart — across a looping tariff and against intervals the event never lists. What
-    the load does and what the meter reads are yours; the rest is not your problem.
+    survives a restart — across a looping tariff, against intervals the event never lists, summing
+    an aggregate report and describing its units. What the load does and what the meter reads are
+    yours; the rest is not your problem.
   </p>
   <p><a class="more" href="{{ get_url(path='@/docs/ven-runtime.md') | safe }}">The VEN runtime →</a></p>
 </section>
@@ -278,7 +281,7 @@ loop {
     </tbody>
   </table>
   <p class="note">
-    466 tests, including 19 property tests and a 57-behaviour storage conformance suite that all
+    481 tests, including 19 property tests and a 57-behaviour storage conformance suite that all
     three backends run. Clippy, rustfmt and rustdoc clean at <code>-D warnings</code>; every feature
     combination and both <code>no_std</code> targets built in CI.
   </p>

@@ -87,6 +87,12 @@ whenever a timeline happens to be recomputed. The runtime records that instant p
 one-hour "do it now" curtailment ends an hour after it arrived rather than an hour after the last
 unrelated write anywhere in the VTN.
 
+**More events than fit in one page** are followed to the end. The conditional read returns one page,
+so the runtime names `limit` on the request and compares the answer against the number it asked for —
+`limit` has a maximum in the schema and no default, so a page's length says nothing about the
+collection unless the reader chose the size. When one page is not enough it pages the collection in
+full and drops the `ETag`, because a tag belongs to the page it came from.
+
 `sync_programs()` is separate because programmes change far less often than events do, and a VEN
 polling its schedule every minute has no reason to re-read the tariff with it.
 
@@ -155,15 +161,36 @@ impl Meter for HouseMeter {
 }
 ```
 
-`DueReport` carries the event, the payload type and reading type the descriptor asked for, the
+`DueReport` carries the event, the payload type, reading type and unit the descriptor asked for, the
 interval ids to quote — report intervals quote the *event's* ids so the VTN can correlate them — and
 the window covered.
+
+**The `payloadDescriptor` is filled in for you.** A payload is deliberately just a type and values;
+the descriptor is what supplies the unit and reading type needed to interpret them (§7.6). All three
+come from the `reportDescriptor` that asked for the report, so the runtime attaches it and a meter
+returns readings and nothing else.
 
 **Returning an empty vector leaves the report due.** A meter that is briefly unavailable costs a
 cycle rather than a window, because skipping without marking the report sent is the difference
 between a late report and a missing one.
 
 `NoMeter` is the default and reports nothing, which is right for a VEN that only follows prices.
+
+### Aggregate reports are summed for you
+
+A descriptor with `aggregate: true` asks for **one** resource entry named `AGGREGATED_REPORT`, and
+§7.7 says what that means: *"aggregation means the data from a set of resources are summed"*. The
+arithmetic is specified, so it is the runtime's: report per resource as usual, and the series are
+summed interval by interval and payload by payload — exactly, because `Value::Number` is a decimal,
+so a thousand meters at 0.1 kWh come to 100.
+
+A payload addition is not defined on rides along rather than blocking the report: §7.8 puts a
+`DATA_QUALITY` of `"MISSING"` beside the usage it characterises. Where every resource reported the
+same value it is carried through, and where they disagree there is no consistent answer, so it is a
+refusal naming the payload type.
+
+Return a single series already named `AGGREGATED_REPORT` to aggregate it yourself, which a deployment
+must whenever the sum is not a sum of the numbers the VEN can see.
 
 ### Reports the event never spelled out
 

@@ -121,7 +121,13 @@ struct VerifyingKey {
 
 struct KeyCache {
     keys: HashMap<String, VerifyingKey>,
+    /// When the key set last came back. This is the *revocation* window's anchor: a withdrawn key
+    /// keeps working until `refresh_after` past it.
     fetched_at: Option<Instant>,
+    /// When a fetch was last *attempted*, successfully or not — the *anti-amplification* window's
+    /// anchor, and a separate field on purpose. Anchored on success, the limit would not apply
+    /// while the authorization server is down, which is when it matters (D-137).
+    attempted_at: Option<Instant>,
 }
 
 /// Validates JWTs issued by an external authorization server.
@@ -156,6 +162,7 @@ impl JwtAuthenticator {
             cache: RwLock::new(KeyCache {
                 keys: HashMap::new(),
                 fetched_at: None,
+                attempted_at: None,
             }),
         })
     }
@@ -172,7 +179,7 @@ impl JwtAuthenticator {
                 return Ok(key);
             }
             if cache
-                .fetched_at
+                .attempted_at
                 .is_some_and(|at| at.elapsed() < self.config.min_refresh_interval)
             {
                 // Too soon to fetch again. An unknown `kid` on a set this recent is a bad token
@@ -184,7 +191,21 @@ impl JwtAuthenticator {
                 // revocation window shorter than the anti-amplification window, which is a
                 // configuration contradiction. Resolving it by rejecting valid tokens would take
                 // the whole VTN down for the difference between the two.
-                return held.ok_or(AuthError::Invalid);
+                if let Some(key) = held {
+                    return Ok(key);
+                }
+                // Nothing held. Which answer that is depends on why: a *current* set that does not
+                // name this `kid` is a bad token, and a set we could not refresh is a VTN that
+                // cannot tell. Saying "invalid" in the second case sends an operator hunting for a
+                // credential problem while their authorization server is down (D-137).
+                return Err(if fresh {
+                    AuthError::Invalid
+                } else {
+                    AuthError::Unavailable(format!(
+                        "the key set from {} is stale and could not be refreshed",
+                        self.config.jwks_url
+                    ))
+                });
             }
         }
 
@@ -199,7 +220,16 @@ impl JwtAuthenticator {
     }
 
     /// Fetch and replace the key set.
+    ///
+    /// The attempt is recorded before the request goes out, so a failure counts against
+    /// `min_refresh_interval` exactly as a success does. It is also what narrows the window in
+    /// which several concurrent misses each start their own fetch.
     async fn refresh(&self) -> Result<(), AuthError> {
+        self.cache
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .attempted_at = Some(Instant::now());
+
         let response = self
             .http
             .get(&self.config.jwks_url)

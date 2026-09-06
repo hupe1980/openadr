@@ -18,20 +18,25 @@
 //! outbox exists to prevent.
 //!
 //! So a QoS 1 publish waits for its `PUBACK`. The event loop runs in its own task and announces
-//! every packet it writes and every acknowledgement it reads; a publish holds a mutex for the round
-//! trip, so exactly one is outstanding and the identifier it is told about is unambiguously its
-//! own. That costs one round trip per notification and buys the guarantee the rest of the design is
-//! built on. QoS 0 is available for a deployment that would rather have the throughput, and says so.
+//! every packet it writes and every acknowledgement it reads, and a publish correlates itself
+//! against those two announcements.
 //!
-//! Serialising is what makes the correlation sound, and it is worth being precise about why. A
-//! publish waits for two things in order: the event loop reporting that *a* publish packet was
-//! written, and the broker acknowledging *that* identifier. Because only one publish is outstanding,
-//! the first is unambiguously ours — with one exception, and it is the reason the timeout is
-//! generous. If a publish gave up *before* its packet was written, the packet could still be written
-//! afterwards and the next publish would adopt its identifier. That needs the connection to be alive
-//! (a dead one broadcasts `Dropped` instead) while a single queued packet goes unwritten for the
-//! whole timeout, which is not a state a working event loop reaches. Shortening
-//! [`MqttConfig::publish_timeout`] below the broker's own latency is the way to make it reachable.
+//! ## The lock covers the write, not the round trip
+//!
+//! Correlation needs one thing: that when the event loop reports "a publish packet went out with
+//! identifier *n*", the publisher reading it knows the packet is theirs. That is a property of the
+//! **queue-to-write** step — local, microseconds — not of the broker round trip, which is the part
+//! worth overlapping. So the lock covers `try_publish` and the wait for our own identifier, and is
+//! released before the acknowledgement: one publish is un-identified at a time, and as many are
+//! outstanding at the broker as the dispatcher allows. QoS 0 registers nothing at all.
+//!
+//! Serialising the round trip instead would make the time to clear a batch the *sum* of its publish
+//! timeouts — exactly what [`DispatchConfig::concurrency`](crate::vtn::DispatchConfig) exists to
+//! prevent, and how a batch comes to outlive its own lease (D-133, D-134).
+//!
+//! `try_publish` rather than `publish`: the async form waits on the client's own request queue, and
+//! waiting on it under this lock would deadlock against the event loop that drains it. A full queue
+//! is a retriable failure the dispatcher already knows how to back off from.
 
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
@@ -169,8 +174,9 @@ pub struct MqttNotifier {
     client: AsyncClient,
     config: MqttConfig,
     wire: broadcast::Sender<Wire>,
-    /// One publish at a time, so the identifier the event loop reports is unambiguously ours.
-    in_flight: Mutex<()>,
+    /// One packet un-identified at a time, so the identifier the event loop reports is
+    /// unambiguously ours. Released before the acknowledgement is waited for; see the module note.
+    writing: Mutex<()>,
     loop_task: tokio::task::JoinHandle<()>,
 }
 
@@ -197,7 +203,7 @@ impl MqttNotifier {
             client,
             config,
             wire,
-            in_flight: Mutex::new(()),
+            writing: Mutex::new(()),
             loop_task,
         }))
     }
@@ -208,51 +214,91 @@ impl MqttNotifier {
     }
 
     async fn publish(&self, topic: &str, payload: Vec<u8>) -> Result<(), MqttError> {
-        // Held for the whole round trip. See the module note: it is what makes the identifier the
-        // event loop reports unambiguous.
-        let _one_at_a_time = self.in_flight.lock().await;
-        let mut events = self.wire.subscribe();
-
-        self.client
-            .publish(topic, self.config.qos, self.config.retain, payload)
-            .await
-            .map_err(|e| MqttError::Queue(e.to_string()))?;
+        let deadline = tokio::time::Instant::now() + self.config.publish_timeout;
 
         if self.config.qos == QoS::AtMostOnce {
-            // Nothing to wait for: QoS 0 has no acknowledgement, which is exactly what the
-            // deployment asked for when it chose it.
-            return Ok(());
+            // Nothing to correlate and nothing to wait for: QoS 0 has no acknowledgement, which is
+            // exactly what the deployment asked for when it chose it. No lock either — there is no
+            // identifier for a second publisher to be confused about.
+            return self
+                .client
+                .try_publish(topic, self.config.qos, self.config.retain, payload)
+                .map_err(|e| MqttError::Queue(e.to_string()));
         }
 
-        tokio::time::timeout(self.config.publish_timeout, async {
-            let mut ours: Option<u16> = None;
-            loop {
-                match events.recv().await {
-                    Ok(Wire::Sent(pkid)) if ours.is_none() => ours = Some(pkid),
-                    Ok(Wire::Acked(pkid)) if ours == Some(pkid) => return Ok(()),
-                    Ok(Wire::Dropped) => {
+        // Phase one, under the lock: queue the packet and learn the identifier the event loop gave
+        // it. Nothing else may be between queueing and writing, or the identifier it reports would
+        // be somebody's guess.
+        let (pkid, mut events) = {
+            let _writing = self.writing.lock().await;
+            // Subscribed inside the lock, so the receiver cannot already hold a `Sent` belonging to
+            // a publish that went before us. It is carried into phase two rather than re-created,
+            // because a broker fast enough to acknowledge before the lock is released would
+            // otherwise be a broker whose acknowledgement is missed.
+            let mut events = self.wire.subscribe();
+
+            self.client
+                .try_publish(topic, self.config.qos, self.config.retain, payload)
+                .map_err(|e| MqttError::Queue(e.to_string()))?;
+
+            let pkid = wait_for(&mut events, deadline, |wire| match wire {
+                Wire::Sent(pkid) => Some(pkid),
+                _ => None,
+            })
+            .await?;
+            (pkid, events)
+        };
+
+        // Phase two, unlocked: the broker round trip. Every other delivery in the dispatcher's
+        // batch can be in this phase at the same time.
+        wait_for(&mut events, deadline, |wire| match wire {
+            Wire::Acked(acked) if acked == pkid => Some(()),
+            _ => None,
+        })
+        .await
+    }
+}
+
+/// Watch the event loop until `want` recognises something, the connection drops, or time runs out.
+///
+/// One function for both phases of a publish, so that "the connection died" and "we fell behind our
+/// own event loop" cannot be handled one way while waiting for an identifier and another way while
+/// waiting for an acknowledgement.
+async fn wait_for<T>(
+    events: &mut broadcast::Receiver<Wire>,
+    deadline: tokio::time::Instant,
+    want: impl Fn(Wire) -> Option<T>,
+) -> Result<T, MqttError> {
+    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+    tokio::time::timeout(remaining, async {
+        loop {
+            match events.recv().await {
+                Ok(wire) => {
+                    if let Wire::Dropped = wire {
                         return Err(MqttError::Disconnected(
                             "connection lost mid-publish".into(),
                         ));
                     }
-                    Ok(_) => continue,
-                    // Falling behind the broadcast means an acknowledgement may have gone past
-                    // unseen. Failing is the safe reading: a redelivery is a duplicate the receiver
-                    // can recognise, a lost notification is not.
-                    Err(broadcast::error::RecvError::Lagged(n)) => {
-                        return Err(MqttError::Disconnected(format!(
-                            "publisher fell {n} events behind its own event loop"
-                        )));
-                    }
-                    Err(broadcast::error::RecvError::Closed) => {
-                        return Err(MqttError::Disconnected("event loop stopped".into()));
+                    if let Some(found) = want(wire) {
+                        return Ok(found);
                     }
                 }
+                // Falling behind the broadcast means an acknowledgement may have gone past unseen.
+                // Failing is the safe reading: a redelivery is a duplicate the receiver can
+                // recognise, a lost notification is not.
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    return Err(MqttError::Disconnected(format!(
+                        "publisher fell {n} events behind its own event loop"
+                    )));
+                }
+                Err(broadcast::error::RecvError::Closed) => {
+                    return Err(MqttError::Disconnected("event loop stopped".into()));
+                }
             }
-        })
-        .await
-        .map_err(|_| MqttError::Unacknowledged(self.config.publish_timeout))?
-    }
+        }
+    })
+    .await
+    .map_err(|_| MqttError::Unacknowledged(remaining))?
 }
 
 #[async_trait]

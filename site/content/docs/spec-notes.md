@@ -220,6 +220,20 @@ time by any VEN — and neither can one with no duration whose successor does no
 **We return `400`.** Catching it at the boundary turns a silent field failure into an error the
 publisher sees immediately.
 
+### A target may not contain a comma
+
+`[API target]` is `string`, `minLength: 1`, `maxLength: 128` — a comma is legal. This VTN refuses
+one, with a `400` naming the field.
+
+The reason is the leniency in [Additions](#additions-all-optional): `?targets=a,b` is accepted as two
+targets, because both forms occur in the field. A target carrying a comma would then be *one* value
+written onto an object and *two* filter terms asked for — and targets are the key of the whole
+object-privacy model, so a VEN granted `zone-a,north` and asking for it would match nothing.
+
+Both readings are defensible; holding them in different layers is not. Every other name —
+`venName`, `resourceName`, `clientName`, `programName` — is unaffected, because none travels in a
+list parameter.
+
 ### An event whose durations run backwards is rejected
 
 The `duration` pattern is `^(-?)P…`, so `-PT1H` is well formed. Nothing OpenADR uses a duration for
@@ -241,7 +255,7 @@ None of these change a specified shape, and a client that ignores them sees a co
 |---|---|
 | `ETag` / `If-None-Match` on every `GET` | OpenADR has no delta sync; every deployment polls. Plain HTTP, invisible to clients that ignore it. |
 | `GET /programs?programName=` | Finding one tariff among hundreds otherwise means paging the whole collection. `openadr3.yaml` declares no such parameter, so `GET /openapi.json` marks it as an extension. |
-| `targets=a,b` as well as `targets=a&targets=b` | Both forms occur in the field. It costs one thing, named here rather than discovered: a target containing a literal comma cannot be expressed in a query, because the comma is read as a separator. `target` is an unconstrained 1–128 character string, so such a value is legal; use the repeated form and avoid commas in target names. |
+| `targets=a,b` as well as `targets=a&targets=b` | Both forms occur in the field. It costs one character, and the cost is [paid at the edge](#a-target-may-not-contain-a-comma) rather than left to whichever layer reads the value first. |
 | Private-address check on webhook callbacks | The security chapter requires the HTTPS check and describes the server-side request forgery risk without mandating a check. This is the other half of that advice. |
 | `problem.type` as a dereferenceable URI | The schema allows any URI; `about:blank` helps nobody. Each one resolves to [its entry](@/docs/problems.md). |
 | `problem.instance` and `X-Request-Id` | The same id on both, so a client quoting one is quoting the other and an operator can find the request in the log. An id supplied by a proxy is kept. |

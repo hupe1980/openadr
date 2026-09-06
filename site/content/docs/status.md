@@ -29,17 +29,17 @@ mistaken for a bug.
 | Observability — `GET /metrics`, dead-letter and subscriber-health views, retry | `vtn` | Complete |
 | Transport security — TLS 1.2+ with ALPN, and a client CA that gates the connection | `tls` | Complete |
 | OpenAPI — `GET /openapi.json`, narrowed to what this deployment serves, named by the mDNS record | `vtn` | Complete |
-| Conformance kit — black-box, 48 clause-citing checks, runs against any VTN | `conformance` | Built; one reading against another implementation |
+| Conformance kit — black-box, 48 clause-citing checks, runs against any VTN; 47 of them proven able to fail | `conformance` | Built; one reading against another implementation |
 | External auth — end-to-end against a real Keycloak: realm, client-credentials grant, token, write | `external-auth` | Complete |
 
-**466 tests**: 277 unit, 70 driving the real HTTP router, 17 property tests, 14 running the
-conformance suite, 12 running the client against a real VTN over TCP, 12 running the VEN runtime
-against one, 11 delivering webhooks over real sockets, 11 in the CLI, 10 doctests, 8 validating JWTs
-against a real JWKS, 12 over the code generator and the drift checks in `xtask`, 5 publishing to a broker over a
-real socket, 5 completing real TLS handshakes, one against a real Keycloak end to end, and one mDNS round
-trip over a real multicast group. Three of the unit tests are the storage conformance suite, which
-is 57 behaviours run against each backend — PostgreSQL included, which starts its own container when
-no server is configured rather than skipping.
+**481 tests**: 289 unit, 71 driving the real HTTP router, 17 property tests, 14 running the VEN
+runtime against a real VTN, 13 running the client against one, 12 over the code generator and the
+drift checks in `xtask`, 11 delivering webhooks over real sockets, 11 in the CLI, 11 doctests, 10
+validating JWTs against a real JWKS, 8 running the conformance suite, 6 publishing to a broker over a
+real socket, 6 completing real TLS handshakes, one against a real Keycloak end to end, and one mDNS
+round trip over a real multicast group. Three of the unit tests are the storage conformance suite,
+which is 57 behaviours run against each backend — PostgreSQL included, which starts its own container
+when no server is configured rather than skipping.
 
 Three more are `#[ignore]`d, because they measure rather than assert: `load` (write latency, broker
 fan-out, drain rate, report ingest with and without a broker behind it), `interop` (this suite
@@ -63,13 +63,18 @@ behaviour written for it, and the traceability below.
 ## Traceability
 
 `cargo xtask trace` extracts every `MUST`, `MUST NOT`, `SHALL` and `SHALL NOT` from the Definitions
-and the notifier binding document and matches each against the clause citations in the source:
-**34 of 34**, nothing exempted. `SHOULD` and `MAY` are excluded — counting recommendations would make
-the number an opinion.
+and the notifier binding document and matches each against the citations in the source. `SHOULD` and
+`MAY` are excluded — counting recommendations would make the number an opinion.
 
-That proves no requirement sits in the specification with nothing in the code near it. It does not
-prove a citation is honest: a citation is a claim, and the evidence for a claim is a test. Resolving
-each requirement to a conformance check is the half still open.
+Each citation is graded by where it is written: a `clause` in the conformance suite is a **check**,
+one inside a test is a **test**, and anything else is a **mention** — a claim by whoever wrote the
+comment.
+
+**34 of 34 are named by a check or a test**, nothing exempted, and the number is a ratchet: a release
+that lets it fall fails the build.
+
+The unit is the section, so a section carrying three requirements is credited by a test covering one
+of them. Naming the sentence is the half still open.
 
 ## What it does not do
 
@@ -127,11 +132,13 @@ pilot needs. Measure it yourself with
 `cargo test --all-features --test load -- --ignored --nocapture`; treat published figures as shapes
 rather than a capacity plan. Ten thousand VENs, and server-class hardware, are not measured.
 
-**The MQTT publisher publishes one message at a time.** A QoS 1 publish holds a lock for its round
-trip, because that is what makes the broker's acknowledgement unambiguously that publish's own. A
-5 ms round trip therefore caps broker throughput at roughly 200 notifications per second per VTN
-process. Running several dispatcher processes multiplies that, which the outbox's leases already make
-safe; `MqttConfig::qos = AtMostOnce` removes the cap and the guarantee together.
+**Broker fan-out is a copy per entitled VEN.** Per-VEN topics are what keep object privacy intact on
+a shared broker, and the cost of them is the number of them: an event a thousand VENs are entitled to
+is a thousand publishes. Those publishes overlap — the publisher serialises only the microseconds
+between queueing a packet and writing it, not the broker round trip — so the bound is
+`DispatchConfig::concurrency` and the broker, not one round trip at a time. Running several
+dispatcher processes multiplies it, which the outbox's leases already make safe;
+`MqttConfig::qos = AtMostOnce` removes the acknowledgement and its guarantee together.
 
 **Subscription bearer tokens are stored as given.** Encryption at rest for the secrets a VTN holds on
 behalf of clients — subscription `bearerToken`s and webhook signing keys — is not implemented. That
@@ -145,10 +152,11 @@ adapter at the edge is the intended answer and is not written.
 **Pre-1.0 API and schema.** Breaking changes are possible on any release. The SQL schema is
 authoritative rather than historical and there are no migrations.
 
-**Four advisories stand against a transitive dependency.** `rumqttc 0.25.1`, its newest release, pins
-`rustls-webpki 0.102`; the fixes are in 0.103. `deny.toml` records each with the reason it is not
-reachable here — three need a misissued certificate, one needs a certificate revocation list, and
-this crate supplies neither — and names the version that ends the exception.
+**Five advisories stand against one transitive dependency.** `rumqttc 0.25.1`, its newest release,
+pins `rustls-webpki 0.102` — the fixes are in 0.103 — and the archived `rustls-pemfile`. `deny.toml`
+records each with the reason it is not reachable here: two need a misissued certificate, two need a
+certificate revocation list and this crate supplies none, and nothing here calls `rustls-pemfile` at
+all. Each names the version that ends the exception.
 
 ## Where the specification is ambiguous
 
@@ -180,7 +188,9 @@ What is unusual about this implementation, and worth weighing:
   scheduling, a clock-skew guard.
 - **A black-box conformance kit** that runs against *any* VTN, including yours.
 - **Decimals, generated payload typing, and `no_std`** for the model, schema and core.
-- **Pure Rust**, with no C toolchain in the tree.
+- **No C library to install**, for any feature: no OpenSSL, no Avahi, nothing `pkg-config` has to
+  find. What C there is — `ring`, and SQLite under the `sqlite` feature — is vendored source cargo
+  builds, which is what makes cross-compilation ordinary.
 
 And what is not here: certification, and the deployment history that comes with it.
 [What it does not do](#what-it-does-not-do) above is the rest of the answer.

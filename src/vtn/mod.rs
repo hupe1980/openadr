@@ -719,7 +719,7 @@ impl Vtn {
     /// Start everything that runs beside the router, and hand back one handle for all of it.
     ///
     /// One function rather than a line in each `serve`, because the two lists drifted: the TLS
-    /// listener span<!-- -->ed the dispatcher and not the retention sweeper, so a VTN configured to age
+    /// listener spawned the dispatcher and not the retention sweeper, so a VTN configured to age
     /// reports out and served over TLS simply never did — silently, and on precisely the deployment
     /// that needs it most. `--tls-cert` is for the site controller with no room for a reverse proxy,
     /// which is also the one whose SQLite file has nowhere to grow (D-128).

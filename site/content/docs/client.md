@@ -87,6 +87,11 @@ let maybe = bl.events().try_get(&id).await?;
 `list_all` fetches pages sequentially. `skip`/`limit` has no cursor, so a parallel fetch could miss
 or duplicate a record if the collection changes underneath it.
 
+**Name the limit if you page by hand.** `openadr3.yaml` gives `limit` a *maximum* of 50 and **no
+default**, so a VTN sent none may answer with a page of any size. A short page means "that was all of
+them" only if you chose the page size. `list_all` sends `limit` on every request for that reason, and
+so does the VEN runtime's event sync.
+
 ### Conditional reads
 
 The VTN's headline feature for pollers is only a feature if a client can use it:

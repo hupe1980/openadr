@@ -80,6 +80,121 @@ fn price(value: i64) -> ValuesMap {
     )
 }
 
+/// `[Def §VEN enrollment]`: "A VEN **MUST** support end-user configuration of: VTN URL, `clientID`
+/// and `clientSecret` (required for OAuth 2 client credential flow)."
+///
+/// Three values and nothing else — no pre-issued token, no header set by hand. The client obtains
+/// its own token from the VTN's `/auth/token` and uses it, which is the whole enrollment path an
+/// installer configures and the one every other test in this file skips by presenting a token
+/// directly. It is also the only place the client's half of the grant runs over a socket: the VTN's
+/// half is covered in `tests/api.rs` against the router, and two halves that are each tested alone
+/// is the arrangement this file exists to distrust.
+#[cfg(feature = "internal-auth")]
+#[tokio::test]
+async fn a_ven_configured_with_a_url_and_a_client_secret_enrols_itself() {
+    use openadr::client::Credentials;
+    use openadr::vtn::auth::{InternalAuth, Scope, Scopes};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    // The issuer has to name the URL it will actually be reached at, because that URL is the `iss`
+    // and `aud` of every token it mints.
+    let base = format!("http://{addr}/openadr3/3.1.0");
+
+    let auth = InternalAuth::builder(format!("{base}/auth/token"))
+        .client("ven-7", "hunter2", Scopes::new(Scope::VEN))
+        .unwrap()
+        .build();
+    let vtn = Vtn::builder()
+        .storage(MemoryStorage::shared())
+        .authenticator(Arc::new(auth))
+        .clock(Arc::new(FixedClock::new(now())))
+        .config(VtnConfig {
+            base_path: "/openadr3/3.1.0".into(),
+            ..Default::default()
+        })
+        .build();
+    let router = vtn.router();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    // Exactly the three items the specification names an installer must be able to set.
+    let client = Client::<VirtualEndNode>::builder(&base)
+        .unwrap()
+        .credentials(Credentials::new("ven-7", "hunter2"))
+        .build()
+        .unwrap();
+
+    let programs = client
+        .programs()
+        .list()
+        .await
+        .expect("the VEN could not read");
+    assert!(programs.is_empty());
+
+    // The token was fetched rather than supplied, and it is cached rather than re-fetched.
+    let token = client
+        .access_token()
+        .await
+        .unwrap()
+        .expect("the client holds no token, so it never ran the grant");
+    client.programs().list().await.unwrap();
+    assert_eq!(
+        client.access_token().await.unwrap().as_deref(),
+        Some(token.as_str()),
+        "the client re-ran the grant instead of reusing the token it holds"
+    );
+
+    // Pinning the token endpoint instead of discovering it, and asking for fewer scopes than the
+    // credential holds. Both are configuration an installer sets and neither had a caller.
+    let pinned = Client::<VirtualEndNode>::builder(&base)
+        .unwrap()
+        .credentials(
+            Credentials::new("ven-7", "hunter2")
+                .with_token_url(format!("{base}/auth/token").parse().unwrap())
+                .with_scopes("read_ven_objects"),
+        )
+        .build()
+        .unwrap();
+    pinned
+        .programs()
+        .list()
+        .await
+        .expect("a pinned token URL and a narrowed scope still authenticate");
+    // Narrowed means narrowed: the credential may write reports and this token asked not to.
+    let refused = pinned
+        .reports()
+        .create(&openadr::model::ReportRequest::new(
+            "no-such-event".parse().unwrap(),
+            "ven-7".parse().unwrap(),
+            Vec::new(),
+        ))
+        .await;
+    assert!(
+        refused.is_err(),
+        "a token that asked for read_ven_objects alone was allowed to write a report"
+    );
+
+    // "A VEN MAY be pre-configured with those items, but MUST support end-user reconfiguration":
+    // a wrong secret is a refusal the operator can act on, not a hang and not a panic.
+    let wrong = Client::<VirtualEndNode>::builder(&base)
+        .unwrap()
+        .credentials(Credentials::new("ven-7", "wrong"))
+        .build()
+        .unwrap();
+    let err = wrong
+        .programs()
+        .list()
+        .await
+        .expect_err("a wrong client secret must not authenticate");
+    let message = err.to_string();
+    assert!(
+        message.contains("invalid_client") || message.contains("401") || message.contains("400"),
+        "a refused grant should say so: {message}"
+    );
+}
+
 #[tokio::test]
 async fn a_full_business_logic_workflow() {
     let base = start_vtn().await;

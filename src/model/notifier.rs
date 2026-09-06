@@ -176,6 +176,44 @@ mod tests {
     }
 
     #[test]
+    fn an_mtls_binding_names_the_three_files_a_client_needs() {
+        // `[Notifiers §12.3]`: "A VTN MAY support MQTT broker authentication via mTLS. If so, the
+        // VTN's response to `GET /notifiers` MUST provide the required certificate authority (CA),
+        // client certificate, and client certificate key."
+        //
+        // Asserted against the worked example's own spelling rather than against a round trip. A
+        // round trip cannot see a symmetric rename: writer and reader would agree on `ca_cert` and
+        // no client on the other end of a real deployment would (D-100).
+        let r = NotifiersResponse {
+            webhook: true,
+            mqtt: Some(MqttNotifierBinding {
+                uris: crate::std_shim::vec!["mqtts://broker.example.com".into()],
+                serialization: Serialization::Json,
+                authentication: MqttAuthentication::Certificate {
+                    ca_cert: "ca-pem".into(),
+                    client_cert: "cert-pem".into(),
+                    client_key: "key-pem".into(),
+                },
+            }),
+        };
+        let v: serde_json::Value = serde_json::to_value(&r).unwrap();
+        let authentication = &v["MQTT"]["authentication"];
+        assert_eq!(authentication["method"], "CERTIFICATE");
+        assert_eq!(authentication["caCert"], "ca-pem");
+        assert_eq!(authentication["clientCert"], "cert-pem");
+        assert_eq!(authentication["clientKey"], "key-pem");
+        // All three, and nothing else: a client reading this has everything it needs to connect and
+        // is told nothing it should not have to guess at.
+        let keys: crate::std_shim::Vec<&str> = authentication
+            .as_object()
+            .expect("the binding is an object")
+            .keys()
+            .map(crate::std_shim::String::as_str)
+            .collect();
+        assert_eq!(keys, ["method", "caCert", "clientCert", "clientKey"]);
+    }
+
+    #[test]
     fn client_id_placeholder_resolves() {
         let a = MqttAuthentication::Oauth2BearerToken {
             username: "{clientID}".into(),

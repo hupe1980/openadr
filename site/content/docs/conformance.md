@@ -148,18 +148,26 @@ fail everything else for the same reason.
 ## A suite that cannot fail is not a suite
 
 Forty-eight checks that all returned `pass` unconditionally would also pass against this VTN. So the
-suite is run against **deliberately weakened** ones, and each test names which checks must catch that
-weakening and asserts that nothing else fires. The weakenings: caching off; the programme-name lookup
-off; the broker binding removed; a layer that accepts `?eventID=` and drops it; a proxy that strips
-`WWW-Authenticate`, or `Cache-Control` from the token endpoint, or `Cache-Control` and `Vary` from a
-read; and one that rewrites every inbound `Content-Type` to `application/json`.
+suite is also run against **deliberately broken** ones: a table of faults — a switch on the VTN, or a
+proxy rewriting the request, status, headers or JSON body — each naming exactly the checks that must
+catch it.
 
-There is a quieter version of the same mistake, and it took longer to find: a check that *can* fail,
-against a state the suite never creates. `ven-reads-only-its-own-reports` asserted that a VEN's
-report list held nothing belonging to another client — and nothing in the suite had ever written a
-report, so against a fresh VTN it asserted that an empty list was empty. It had been added *because*
-reports were the thinnest area. Reading a check tells you whether it is correct; it does not tell you
-whether it has any data.
+> **47 of 48 checks have been observed failing.**
+
+"Exactly" is the load-bearing word. A check missing from a fault's list did not notice the defect it
+exists for; a check listed on a fault it is not about is a check whose failure does not mean what its
+title says.
+
+The exception is `auth-server-unauthenticated`: the suite discovers the token endpoint through
+`GET /auth/server`, so a fault there breaks the run rather than the check.
+
+There is a quieter version of the same mistake: a check that *can* fail, against a state the suite
+never creates. "A VEN's report list holds nothing belonging to another client" is a correct
+assertion and an empty one if nothing has ever filed a report. Reading a check tells you whether it
+is correct; it does not tell you whether it has any data.
+
+So every check seeds what it is about: `targets-accept-both-forms` creates two differently-targeted
+events, and the ownership checks plant an object belonging to somebody else.
 
 Self-agreement is the mistake this page exists to prevent, and building the instrument is not an
 exemption from it.

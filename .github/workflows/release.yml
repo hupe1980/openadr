@@ -100,7 +100,11 @@ jobs:
 
   binaries:
     name: ${{ matrix.target }}
-    needs: verify
+    # `create-release` as well as `verify`: `upload-rust-binary-action` runs
+    # `gh release upload <tag>`, which uploads *into* a release and does not create one. Without
+    # this edge every target builds for four minutes and then retries `release not found` eleven
+    # times, because the job that creates the release used to depend on this one.
+    needs: [verify, create-release]
     permissions:
       contents: write
     strategy:
@@ -117,8 +121,9 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
           # Cross-compiled, and there is no longer an alternative: GitHub has retired the Intel
-          # macOS runners. Pure Rust with no C in the tree, so the arm64 runner builds it with
-          # nothing but `rustup target add` — which is exactly the property `deny.toml` protects.
+          # macOS runners. The C in the tree is vendored source rather than a system library —
+          # `ring`, and SQLite under the `sqlite` feature — and Apple's clang targets both
+          # architectures, so the arm64 runner needs nothing but `rustup target add`.
           - target: x86_64-apple-darwin
             os: macos-latest
     runs-on: ${{ matrix.os }}
@@ -235,9 +240,14 @@ jobs:
             --format '{{json .Manifest}}' | jq -r .digest)
           cosign sign --yes "ghcr.io/${{ github.repository }}@${digest}"
 
-  release:
+  # Before the uploads, not after: see the `needs` on `binaries`. A draft would keep the release
+  # hidden until every artefact had landed, which is what the ordering here originally wanted — but
+  # `gh release upload` cannot find a draft by tag (cli/cli#6198), so the release is real from the
+  # start and fills in over the next few minutes. The SBOM is generated from the manifest rather
+  # than from a built artefact, so it needs nothing that has not happened yet.
+  create-release:
     name: GitHub release
-    needs: [verify, crates-io, binaries, manifest]
+    needs: verify
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -261,7 +271,8 @@ jobs:
           generate_release_notes: true
           body: |
             OpenADR ${{ needs.verify.outputs.version }} — see the
-            [documentation](https://hupe1980.github.io/openadr/docs/) and
+            [changelog](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md),
+            the [documentation](https://hupe1980.github.io/openadr/docs/) and
             [what is and is not implemented](https://hupe1980.github.io/openadr/docs/status/).
 
             ```console

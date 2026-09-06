@@ -61,8 +61,9 @@ use crate::core::{
 };
 use crate::model::{
     ClientName, Duration, Event, Interval, ObjectId, PayloadType, Program, ProgramName, Report,
-    ReportRequest, ReportResource, Resource, ResourceName, ResourceRequest, Target, Timestamp,
-    Unit, Ven, VenName, VenRequest, VenResourceRequest, VenVenRequest,
+    ReportPayloadDescriptor, ReportRequest, ReportResource, Resource, ResourceName,
+    ResourceRequest, Target, Timestamp, Unit, Ven, VenName, VenRequest, VenResourceRequest,
+    VenVenRequest,
 };
 
 #[cfg(feature = "mqtt")]
@@ -223,7 +224,12 @@ pub struct DueReport {
     pub reading_type: Option<crate::model::ReadingType>,
     /// The unit, if the descriptor said.
     pub units: Option<Unit>,
-    /// Report one aggregated series rather than one per resource.
+    /// Report one aggregated series rather than one per resource `[UG §7.7]`.
+    ///
+    /// A [`Meter`] may ignore this and return one series per resource: the runtime sums them and
+    /// names the result `AGGREGATED_REPORT`. Return a single series already carrying that name to
+    /// aggregate it yourself, which a deployment must whenever the sum is not a sum of the numbers
+    /// the VEN holds.
     pub aggregate: bool,
     /// The interval ids to quote, empty when the VEN chooses its own.
     pub interval_ids: Vec<i32>,
@@ -586,7 +592,14 @@ impl<M: Meter> VenRuntime<M> {
         // `list_if_changed` reads one page. A VEN following more events than fit in one needs the
         // whole set, and the tag is only meaningful for the page it came from — so the tag is kept
         // when one page was enough and dropped when it was not.
-        let full_page = page.value.len() >= crate::vtn_page_limit();
+        //
+        // "Was that page full?" is only answerable because [`VenRuntime::event_query`] *named* the
+        // limit. The schema caps `limit` and gives it no default `[API /events limit]`, so a VTN
+        // sent none may answer with a page of any size it likes; comparing an unrequested page's
+        // length against this crate's own default would read a peer that pages at twenty as a VTN
+        // with twenty events, and the VEN would follow a truncated schedule with nothing anywhere
+        // reporting an error.
+        let full_page = page.value.len() >= crate::model::MAX_PAGE_LIMIT;
         let events: Vec<Event> = if full_page {
             self.client.events().list_all(&query).await?
         } else {
@@ -660,7 +673,11 @@ impl<M: Meter> VenRuntime<M> {
     }
 
     fn event_query(&self) -> Query {
-        let mut query = Query::new().targets(&self.config.targets);
+        // The limit is named rather than left to the VTN. See `sync`: the page's length is only
+        // evidence about the collection if the reader chose the page size.
+        let mut query = Query::new()
+            .targets(&self.config.targets)
+            .limit(crate::model::MAX_PAGE_LIMIT);
         // Events whose intervals have all elapsed are not worth carrying: the VTN can drop them
         // inside the query, which is cheaper than transferring them to be ignored here.
         query = query.active(true);
@@ -876,6 +893,17 @@ impl<M: Meter> VenRuntime<M> {
             if resources.is_empty() {
                 continue;
             }
+            // `[UG §7.7]`: a descriptor asking to aggregate is asking for **one** series named
+            // `AGGREGATED_REPORT`, and "aggregation means the data from a set of resources are
+            // summed". The arithmetic is the specification's, so it is the runtime's; what the
+            // meter owes is the readings. A meter that has already aggregated — because a sum
+            // across resources is not always a sum of the numbers a VEN can see — passes through
+            // untouched.
+            let resources = if due.aggregate {
+                crate::core::aggregate(resources).map_err(|e| VenError::Meter(e.to_string()))?
+            } else {
+                resources
+            };
             let mut request = ReportRequest::new(
                 due.event_id.clone(),
                 self.config.client_name.clone(),
@@ -887,6 +915,18 @@ impl<M: Meter> VenRuntime<M> {
                 due.descriptor,
                 due.sequence
             ));
+            // `[UG §7.6]`: "the values in payload with type of PRICE are simply numbers, and an
+            // accompanying payloadDescriptor supplies the units … necessary to fully interpret"
+            // them — and "reports contain payloadDescriptors".
+            //
+            // The runtime has all three parts already: the requesting `reportDescriptor` named the
+            // payload type, and optionally the reading type and the unit, and `DueReport` carries
+            // them. Filing without one sends a series of bare numbers whose unit is a guess, which
+            // is a thing this project's own conformance suite fails a peer for.
+            let mut descriptor = ReportPayloadDescriptor::new(due.payload_type.clone());
+            descriptor.reading_type = due.reading_type.clone();
+            descriptor.units = due.units.clone();
+            request.payload_descriptors = Some(vec![descriptor]);
             let report = self.client.reports().create(&request).await?;
             self.write().reported.insert(due.key());
             filed.push(report);

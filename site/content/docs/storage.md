@@ -146,10 +146,11 @@ The other two are the [subscriber circuit breaker](@/docs/notifications.md) — 
 decides when an endpoint has stopped answering, and the reset behind
 `POST /admin/outbox/retry`.
 
-**And a suite bounds only the divergences it names.** It had thirty-five behaviours while one
-backend let any authenticated VEN read every subscription in the VTN, `bearerToken` included,
-because "a VEN sees only its own subscriptions" was not one of the thirty-five. Growing the suite is
-not maintenance; it is the coverage — which is why the count above is checked rather than aspired
+**And a suite bounds only the divergences it names.** A behaviour nobody writes down is one no
+backend has to have, and the gap is silent: every backend passes everything it was asked. One
+backend once let any authenticated VEN read every subscription in the VTN, `bearerToken` included,
+simply because no behaviour said otherwise. Growing the suite is not maintenance; it is the
+coverage — which is why the count above is checked by `cargo xtask check-suite` rather than aspired
 to.
 
 The PostgreSQL run starts its own container when no server is configured, so an ordinary

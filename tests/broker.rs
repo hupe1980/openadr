@@ -371,6 +371,10 @@ async fn targeted_event(bl: &Client<BusinessLogic>, program: &str, name: &str, t
 
 #[tokio::test]
 #[ignore = "brings up deploy/compose.yaml: run with --ignored --nocapture"]
+// `[Notifiers §9.4]` and `[Def §MQTT]`: "A VTN MUST configure, and enforce, access to the MQTT
+// broker's topics in accordance with its security and access policy … by any means necessary."
+// Enforced by a real broker calling the real callbacks, which is the only arrangement in which
+// "enforce" means anything.
 async fn object_privacy_holds_across_a_real_broker() {
     let Some(stack) = Stack::start().await else {
         return;

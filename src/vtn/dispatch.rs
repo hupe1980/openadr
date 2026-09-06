@@ -28,11 +28,6 @@ pub struct DispatchConfig {
     pub idle_interval: StdDuration,
     /// Entries to claim per pass.
     pub batch: usize,
-    /// How long a claim is held before another dispatcher may take the entry.
-    ///
-    /// Longer than the transport's own timeout, or a slow delivery would be redelivered while the
-    /// first attempt is still in flight.
-    pub lease: StdDuration,
     /// How many deliveries in a batch may be in flight at once.
     ///
     /// Deliveries are independent: they go to different subscribers over different sockets, and one
@@ -40,6 +35,13 @@ pub struct DispatchConfig {
     /// time to clear a batch the *sum* of its timeouts, which is how a batch outlives its own lease
     /// and gets redelivered by a second dispatcher while the first is still working through it.
     pub concurrency: usize,
+    /// How long one delivery attempt may take before it is given up on as a retriable failure.
+    ///
+    /// Enforced here rather than left to the transport, because it is the number the **lease** is
+    /// derived from and a transport cannot be trusted to have the same one. A transport's own
+    /// timeout is still the first to fire when it is shorter; this is the backstop that makes
+    /// [`DispatchConfig::lease`] a bound rather than a hope.
+    pub attempt_timeout: StdDuration,
     /// When to retry and when to give up on one notification.
     pub retry: RetryPolicy,
     /// When to give up on a *subscriber*.
@@ -55,11 +57,33 @@ impl Default for DispatchConfig {
         Self {
             idle_interval: StdDuration::from_millis(250),
             batch: 32,
-            lease: StdDuration::from_secs(60),
             concurrency: 8,
+            attempt_timeout: StdDuration::from_secs(15),
             retry: RetryPolicy::default(),
             breaker: BreakerPolicy::default(),
         }
+    }
+}
+
+impl DispatchConfig {
+    /// Rounds of concurrent attempts one batch takes.
+    fn waves(&self) -> u32 {
+        u32::try_from(self.batch.div_ceil(self.concurrency.max(1))).unwrap_or(u32::MAX)
+    }
+
+    /// How long a claim is held before another dispatcher may take the entry.
+    ///
+    /// **Derived, not configured.** The lease and the time a batch takes are two bounds on one
+    /// quantity, and two configurable bounds on one quantity eventually disagree — at which point a
+    /// second dispatcher claims entries the first is still delivering. Redelivery is not a
+    /// correctness failure (every notification is idempotent by design), but it doubles the traffic
+    /// to an endpoint that is already not answering, and nothing reports it.
+    ///
+    /// So there is one number: the worst case a batch can take, plus one wave of slack for the
+    /// claim and for recording what happened (D-134).
+    pub fn lease(&self) -> StdDuration {
+        self.attempt_timeout
+            .saturating_mul(self.waves().saturating_add(1))
     }
 }
 
@@ -127,7 +151,7 @@ impl Dispatcher {
         let now = self.clock.now();
         let claimed = match self
             .storage
-            .claim_due(now, self.config.batch, self.config.lease, &self.owner)
+            .claim_due(now, self.config.batch, self.config.lease(), &self.owner)
             .await
         {
             Ok(claimed) => claimed,
@@ -151,7 +175,21 @@ impl Dispatcher {
         // reading `X-OpenADR-Attempt` sees 1 on the first delivery and 2 on the first retry.
         let attempt = entry.attempts + 1;
         let channel = entry.delivery.channel();
-        let outcome = self.notifier.deliver(&entry.delivery, attempt).await;
+        // Bounded here, not only in the transport. `lease()` is computed from this number, so a
+        // transport whose own timeout is longer — or absent — would otherwise make the lease a
+        // statement about a case that does not hold.
+        let outcome = match tokio::time::timeout(
+            self.config.attempt_timeout,
+            self.notifier.deliver(&entry.delivery, attempt),
+        )
+        .await
+        {
+            Ok(outcome) => outcome,
+            Err(_) => Err(crate::vtn::notify::DeliveryFailure::retriable(format!(
+                "the transport did not finish within {:?}",
+                self.config.attempt_timeout
+            ))),
+        };
         let now = self.clock.now();
         match outcome {
             Ok(()) => {
@@ -319,6 +357,91 @@ mod tests {
                 }),
             ),
         }
+    }
+
+    #[test]
+    fn the_lease_covers_the_worst_case_a_batch_can_take() {
+        // Whatever the batch, the concurrency and the attempt budget, a batch of attempts that all
+        // run to the budget must finish inside the lease — or a second dispatcher claims entries
+        // the first is still delivering.
+        for (batch, concurrency, seconds) in [
+            (32, 8, 15),
+            (1, 1, 30),
+            (100, 4, 5),
+            (7, 3, 1),
+            (64, 64, 60),
+        ] {
+            let config = DispatchConfig {
+                batch,
+                concurrency,
+                attempt_timeout: StdDuration::from_secs(seconds),
+                ..DispatchConfig::default()
+            };
+            let waves = batch.div_ceil(concurrency) as u32;
+            let worst_case = config.attempt_timeout * waves;
+            assert!(
+                config.lease() > worst_case,
+                "batch {batch}/concurrency {concurrency}: a batch takes up to {worst_case:?} \
+                 and the lease is {:?}",
+                config.lease()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_transport_that_never_answers_is_bounded_by_the_attempt_budget() {
+        // A transport with no timeout of its own — or one longer than the dispatcher's — must not
+        // be able to hold an entry past its lease. The bound lives in the dispatcher, because that
+        // is where the lease is computed.
+        struct NeverAnswers;
+
+        #[async_trait::async_trait]
+        impl Notifier for NeverAnswers {
+            fn handles(&self, _channel: crate::vtn::notify::Channel) -> bool {
+                true
+            }
+            async fn deliver(
+                &self,
+                _delivery: &Delivery,
+                _attempt: u32,
+            ) -> Result<(), DeliveryFailure> {
+                std::future::pending().await
+            }
+            fn name(&self) -> &'static str {
+                "never"
+            }
+        }
+
+        let storage = MemoryStorage::shared();
+        let config = DispatchConfig {
+            batch: 1,
+            concurrency: 1,
+            attempt_timeout: StdDuration::from_millis(200),
+            ..DispatchConfig::default()
+        };
+        let dispatcher = Dispatcher::new(
+            storage.clone(),
+            Arc::new(NeverAnswers),
+            Arc::new(FixedClock::new(now())),
+            config.clone(),
+        );
+        storage.enqueue(vec![delivery()], now()).await.unwrap();
+
+        let started = std::time::Instant::now();
+        // The ceiling is the assertion: without a bound in the dispatcher this never returns.
+        let attempted = tokio::time::timeout(StdDuration::from_secs(5), dispatcher.dispatch_once())
+            .await
+            .expect("the dispatcher never gave up on a transport that never answers");
+        assert_eq!(attempted, 1);
+        assert!(
+            started.elapsed() >= config.attempt_timeout,
+            "the attempt was cut short of its own budget"
+        );
+
+        // Recorded as a retriable failure, not as a delivery.
+        let stats = dispatcher.stats().await;
+        assert_eq!(stats.pending, 1, "the entry was lost rather than retried");
+        assert_eq!(stats.dead, 0);
     }
 
     /// Fails the first `fail_first` attempts, then succeeds. Records the attempt numbers it saw.

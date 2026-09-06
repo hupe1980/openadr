@@ -360,6 +360,180 @@ impl ReportSchedule {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Aggregation
+// ---------------------------------------------------------------------------
+
+/// Why a set of per-resource series could not be summed into one.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum AggregateError {
+    /// A payload addition is not defined on, whose resources do not agree.
+    ///
+    /// A non-numeric payload — `[UG §7.8]`'s `DATA_QUALITY` of `"MISSING"`, say — has no sum, so the
+    /// only aggregate consistent with every resource is the value they all reported. Where they
+    /// disagree there is none, and picking one would be inventing the answer.
+    #[error(
+        "an aggregate report cannot combine {payload_type}: it carries values addition is not \
+         defined on [UG §7.7], and the resources do not all report the same ones. Aggregate this \
+         payload in the meter and return a single AGGREGATED_REPORT series"
+    )]
+    NotSummable {
+        /// The payload type that could not be combined.
+        payload_type: crate::std_shim::String,
+    },
+    /// Two resources reported a different number of values for one payload type.
+    #[error(
+        "an aggregate report cannot sum {payload_type}: one resource reported {expected} value(s) \
+         for interval {interval} and another {found}, so there is no correspondence to sum along"
+    )]
+    Ragged {
+        /// The payload type whose series disagree.
+        payload_type: crate::std_shim::String,
+        /// The interval the disagreement is in.
+        interval: i32,
+        /// How many values the first resource gave.
+        expected: usize,
+        /// How many the next one gave.
+        found: usize,
+    },
+}
+
+/// Sum per-resource series into the single series an aggregate report carries.
+///
+/// `[UG §7.7]`: "Where a VEN aggregates data from a number of resources, it may provide a single
+/// resource entry in the resources list of a report and set the resourceName to AGGREGATED_REPORT.
+/// **Aggregation means the data from a set of resources are summed.**"
+///
+/// The arithmetic is written down, so it is not a decision left to the deployment. A
+/// [`Meter`](crate::ven::Meter) owes the readings; the protocol owes the shape, and the shape
+/// includes the reserved name — without it a VTN cannot tell an aggregate from a resource that
+/// happens to be alone.
+///
+/// Values are summed position-wise within each `(interval id, payload type)` on exact decimals, so
+/// a thousand meters at 0.1 kWh give 100. Intervals are matched by id — which is what a report's
+/// ids are for — and take their timing from the first resource that reported them.
+///
+/// Already aggregated input passes through untouched: a meter returning one series named
+/// `AGGREGATED_REPORT` has done the work itself, which a deployment must whenever the sum is not a
+/// sum of the numbers the VEN can see.
+pub fn aggregate(
+    resources: Vec<crate::model::ReportResource>,
+) -> Result<Vec<crate::model::ReportResource>, AggregateError> {
+    use crate::model::{Interval, ResourceName, Value, ValuesMap};
+    use crate::std_shim::{BTreeMap, Vec, vec};
+
+    if resources.len() <= 1
+        && resources
+            .first()
+            .is_none_or(|r| r.resource_name.is_aggregated())
+    {
+        return Ok(resources);
+    }
+
+    // Interval id → payload type → the values each resource reported, in first-seen order. The
+    // combining happens after everything is collected, because whether a payload type can be
+    // *summed* is a property of every resource's values for it and not of the first one's.
+    type Series = Vec<(crate::model::PayloadType, Vec<Vec<Value>>)>;
+    let mut collected: BTreeMap<i32, Series> = BTreeMap::new();
+    let mut periods: BTreeMap<i32, Option<crate::model::IntervalPeriod>> = BTreeMap::new();
+    let mut outer_period = None;
+
+    for resource in &resources {
+        if outer_period.is_none() {
+            outer_period = resource.interval_period.clone();
+        }
+        for interval in &resource.intervals {
+            periods
+                .entry(interval.id)
+                .or_insert_with(|| interval.interval_period.clone());
+            let series = collected.entry(interval.id).or_default();
+            for payload in &interval.payloads {
+                match series.iter_mut().find(|(t, _)| *t == payload.value_type) {
+                    Some((_, reported)) => reported.push(payload.values.clone()),
+                    None => series.push((payload.value_type.clone(), vec![payload.values.clone()])),
+                }
+            }
+        }
+    }
+
+    let mut intervals: Vec<Interval> = Vec::with_capacity(collected.len());
+    for (id, series) in collected {
+        let mut payloads = Vec::with_capacity(series.len());
+        for (value_type, reported) in series {
+            payloads.push(ValuesMap {
+                values: combine(&value_type, id, &reported)?,
+                value_type,
+            });
+        }
+        intervals.push(Interval {
+            id,
+            interval_period: periods.get(&id).cloned().flatten(),
+            payloads,
+        });
+    }
+
+    Ok(vec![crate::model::ReportResource {
+        resource_name: ResourceName::new(ResourceName::AGGREGATED)
+            .expect("the reserved aggregate name is a legal resource name"),
+        interval_period: outer_period,
+        intervals,
+    }])
+}
+
+/// Combine what every resource reported for one payload type in one interval.
+///
+/// Summed where every value is a number, which is `[UG §7.7]`'s rule. Where they are not — a
+/// `DATA_QUALITY` of `"MISSING"` `[UG §7.8]`, an `OPERATING_STATE`, a private string — there is no
+/// sum, and the only value consistent with every resource is the one they all reported. That is a
+/// carry-through rather than a choice; where they disagree, refusing is the only honest answer.
+fn combine(
+    payload_type: &crate::model::PayloadType,
+    interval: i32,
+    reported: &[crate::std_shim::Vec<crate::model::Value>],
+) -> Result<crate::std_shim::Vec<crate::model::Value>, AggregateError> {
+    use crate::model::Value;
+    use crate::std_shim::{ToString, Vec};
+
+    let Some(first) = reported.first() else {
+        return Ok(Vec::new());
+    };
+    let summable = reported
+        .iter()
+        .all(|values| values.iter().all(|v| v.as_decimal().is_some()));
+
+    if !summable {
+        return if reported.iter().all(|values| values == first) {
+            Ok(first.clone())
+        } else {
+            Err(AggregateError::NotSummable {
+                payload_type: payload_type.as_str().to_string(),
+            })
+        };
+    }
+
+    let mut total: Vec<Value> = first
+        .iter()
+        .map(|v| Value::Number(v.as_decimal().expect("checked summable")))
+        .collect();
+    for values in &reported[1..] {
+        if values.len() != total.len() {
+            return Err(AggregateError::Ragged {
+                payload_type: payload_type.as_str().to_string(),
+                interval,
+                expected: total.len(),
+                found: values.len(),
+            });
+        }
+        for (slot, addend) in total.iter_mut().zip(values) {
+            let (Value::Number(a), Some(b)) = (&slot, addend.as_decimal()) else {
+                unreachable!("every value was checked to be a number");
+            };
+            *slot = Value::Number(a + b);
+        }
+    }
+    Ok(total)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -413,6 +587,185 @@ mod tests {
     fn schedule(rd: &ReportDescriptor, sequence: &IntervalSequence) -> ReportSchedule {
         let (from, to) = everything();
         ReportSchedule::compute(rd, sequence, from, to)
+    }
+
+    // -- aggregation -------------------------------------------------------
+
+    fn series(name: &str, readings: &[(i32, &str, &[&str])]) -> crate::model::ReportResource {
+        use crate::model::{Interval, ReportResource, Value, ValuesMap};
+        ReportResource {
+            resource_name: name.parse().unwrap(),
+            interval_period: None,
+            intervals: readings
+                .iter()
+                .map(|(id, payload, values)| Interval {
+                    id: *id,
+                    interval_period: None,
+                    payloads: vec![ValuesMap::new(
+                        payload.parse().unwrap(),
+                        values
+                            .iter()
+                            .map(|v| Value::Number(v.parse().unwrap()))
+                            .collect(),
+                    )],
+                })
+                .collect(),
+        }
+    }
+
+    fn summed(resource: &crate::model::ReportResource, id: i32) -> Vec<String> {
+        resource
+            .intervals
+            .iter()
+            .find(|i| i.id == id)
+            .expect("interval")
+            .payloads[0]
+            .values
+            .iter()
+            .map(|v| v.as_decimal().expect("a number").to_string())
+            .collect()
+    }
+
+    #[test]
+    fn aggregation_sums_the_resources_interval_by_interval() {
+        // `[UG §7.7]`: "Aggregation means the data from a set of resources are summed." Matched by
+        // interval id, which is what a report's ids are for.
+        let out = aggregate(vec![
+            series("meter-a", &[(0, "USAGE", &["1.5"]), (1, "USAGE", &["2.0"])]),
+            series(
+                "meter-b",
+                &[(0, "USAGE", &["0.25"]), (1, "USAGE", &["4.0"])],
+            ),
+        ])
+        .expect("two well-formed series sum");
+
+        assert_eq!(out.len(), 1, "an aggregate report carries one series");
+        assert!(
+            out[0].resource_name.is_aggregated(),
+            "the reserved name is the only thing that tells a VTN this is an aggregate, and it \
+             came back as {:?}",
+            out[0].resource_name
+        );
+        assert_eq!(summed(&out[0], 0), ["1.75"]);
+        assert_eq!(summed(&out[0], 1), ["6.0"]);
+    }
+
+    #[test]
+    fn aggregation_is_exact() {
+        // The reason `Value::Number` is a decimal. A thousand meters at a tenth of a kilowatt-hour
+        // is a hundred, not 99.99999999999859.
+        let out = aggregate(
+            (0..1_000)
+                .map(|n| series(&format!("m{n}"), &[(0, "USAGE", &["0.1"])]))
+                .collect(),
+        )
+        .expect("a thousand series sum");
+        assert_eq!(summed(&out[0], 0), ["100.0"]);
+    }
+
+    #[test]
+    fn a_multi_value_payload_sums_position_by_position() {
+        let out = aggregate(vec![
+            series("a", &[(0, "USAGE", &["1", "2", "3"])]),
+            series("b", &[(0, "USAGE", &["10", "20", "30"])]),
+        ])
+        .expect("equal-length series sum");
+        assert_eq!(summed(&out[0], 0), ["11", "22", "33"]);
+    }
+
+    #[test]
+    fn a_meter_that_has_already_aggregated_is_left_alone() {
+        // A sum across resources is not always a sum of the numbers a VEN holds, so a deployment
+        // that has done the work says so with the reserved name and the runtime does not re-do it.
+        let mine = vec![series("AGGREGATED_REPORT", &[(0, "USAGE", &["7"])])];
+        assert_eq!(aggregate(mine.clone()).unwrap(), mine);
+    }
+
+    #[test]
+    fn one_ordinary_resource_is_still_named_as_an_aggregate() {
+        // A VEN with one resource asked for an aggregate report must still say that is what this
+        // is: a VTN cannot tell an aggregate from a resource that happens to be alone.
+        let out = aggregate(vec![series("only-meter", &[(0, "USAGE", &["3"])])]).unwrap();
+        assert!(out[0].resource_name.is_aggregated());
+        assert_eq!(summed(&out[0], 0), ["3"]);
+    }
+
+    #[test]
+    fn a_payload_with_no_sum_is_carried_through_when_every_resource_agrees() {
+        // `[UG §7.8]`: a `DATA_QUALITY` payload sits *beside* the quantity it characterises, so an
+        // aggregate report legally carries both. Refusing the whole report because one of its
+        // payloads has no sum would make a shape the User Guide gives a worked example of
+        // impossible to file.
+        use crate::model::{Interval, ReportResource, Value, ValuesMap};
+        let with_quality = |name: &str, usage: &str, quality: &str| ReportResource {
+            resource_name: name.parse().unwrap(),
+            interval_period: None,
+            intervals: vec![Interval::new(
+                0,
+                vec![
+                    ValuesMap::single(
+                        "USAGE".parse().unwrap(),
+                        Value::Number(usage.parse().unwrap()),
+                    ),
+                    ValuesMap::single(
+                        "DATA_QUALITY".parse().unwrap(),
+                        Value::String(quality.into()),
+                    ),
+                ],
+            )],
+        };
+
+        let out = aggregate(vec![
+            with_quality("a", "0.012", "MISSING"),
+            with_quality("b", "0.008", "MISSING"),
+        ])
+        .expect("a quantity and a characterisation aggregate together");
+        let payloads = &out[0].intervals[0].payloads;
+        assert_eq!(payloads[0].value_type.as_str(), "USAGE");
+        assert_eq!(
+            payloads[0].values[0].as_decimal().unwrap().to_string(),
+            "0.020"
+        );
+        assert_eq!(payloads[1].value_type.as_str(), "DATA_QUALITY");
+        assert_eq!(payloads[1].values, vec![Value::String("MISSING".into())]);
+
+        // And where the resources disagree there is no consistent answer, so it is refused rather
+        // than resolved by whichever came first.
+        assert!(matches!(
+            aggregate(vec![
+                with_quality("a", "0.012", "MISSING"),
+                with_quality("b", "0.008", "OK"),
+            ]),
+            Err(AggregateError::NotSummable { .. })
+        ));
+    }
+
+    #[test]
+    fn what_cannot_be_summed_is_refused_rather_than_guessed_at() {
+        use crate::model::{Interval, ReportResource, Value, ValuesMap};
+        let text = |name: &str, state: &str| ReportResource {
+            resource_name: name.parse().unwrap(),
+            interval_period: None,
+            intervals: vec![Interval::new(
+                0,
+                vec![ValuesMap::new(
+                    "OPERATING_STATE".parse().unwrap(),
+                    vec![Value::String(state.into())],
+                )],
+            )],
+        };
+        assert!(matches!(
+            aggregate(vec![text("a", "NORMAL"), text("b", "CURTAILED")]),
+            Err(AggregateError::NotSummable { .. })
+        ));
+
+        // And series that do not line up: there is no correspondence to sum along, and picking one
+        // would be inventing data.
+        let ragged = aggregate(vec![
+            series("a", &[(0, "USAGE", &["1", "2"])]),
+            series("b", &[(0, "USAGE", &["1"])]),
+        ]);
+        assert!(matches!(ragged, Err(AggregateError::Ragged { .. })));
     }
 
     fn descriptor() -> ReportDescriptor {

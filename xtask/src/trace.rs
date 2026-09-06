@@ -13,10 +13,22 @@
 //! check's `clause`. That convention was already in use in fifty places, so this reads what was
 //! being written rather than asking for a second annotation to keep in step with the first.
 //!
-//! What it proves is that every section carrying a requirement is *named* by something in `src/`.
-//! Not that the naming is honest: a citation is a claim, and the evidence for a claim is a test.
-//! What it removes is a requirement with no code anywhere near it and nobody noticing — the shape of
-//! D-092 and R-016.
+//! Two numbers come out of it, and the second is the one that matters.
+//!
+//! * **Cited.** Every section carrying a requirement is *named* by something in the tree. This is a
+//!   gate: a requirement nothing anywhere names fails the build. What it removes is a requirement
+//!   with no code near it and nobody noticing — the shape of D-092 and R-016.
+//! * **Checked.** The section is named by a **test or a conformance check** rather than only by a
+//!   doc comment. A citation is a claim by whoever wrote it, and the only evidence for a claim is
+//!   something that runs. This is a ratchet rather than a gate: [`MIN_CHECKED`] may not fall.
+//!
+//! Where a citation counts as evidence is decided by where it is written:
+//!
+//! * a `clause` in `src/conformance/suite.rs` — a black-box check run against a live VTN;
+//! * anything under `tests/` — an integration test;
+//! * anything in `src/` after that file's first `#[cfg(test)]` — a unit test. A heuristic, and an
+//!   exact one for this crate, where the test module is the last thing in every file;
+//! * anything else — a mention.
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -67,6 +79,51 @@ const DOCUMENTS: &[Document] = &[
 /// checks, which is the shape D-119 found in the problem-type registry.
 const NOT_OURS: &[(&str, &str, &str)] = &[];
 
+/// The floor for requirements whose section a test or a conformance check names.
+///
+/// A ratchet, not a target: raise it when the number rises, and never lower it to make a build pass.
+/// It currently sits at the total: every normative statement is in a section something that *runs*
+/// names. That is a stronger claim than the "cited" number and still not the strongest available —
+/// the granularity is the section, not the sentence — but it is the one that stops a requirement
+/// from being covered by a doc comment and nothing else.
+const MIN_CHECKED: usize = 34;
+
+/// How strong the evidence behind a citation is.
+///
+/// Ordered: a check outranks a test, and a test outranks a mention. A section is reported at its
+/// strongest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Evidence {
+    /// A doc comment naming the section. A claim, and no more than that.
+    Mention,
+    /// A unit or integration test.
+    Test,
+    /// A conformance check, which runs black-box against a live VTN.
+    Check,
+}
+
+impl Evidence {
+    fn mark(self) -> &'static str {
+        match self {
+            Evidence::Mention => "cited",
+            Evidence::Test => "tested",
+            Evidence::Check => "checked",
+        }
+    }
+
+    /// Whether this is evidence rather than a claim.
+    fn runs(self) -> bool {
+        self >= Evidence::Test
+    }
+}
+
+/// One place a section is cited from.
+#[derive(Debug, Clone)]
+struct Citation {
+    file: String,
+    evidence: Evidence,
+}
+
 /// One requirement, and where it is written.
 #[derive(Debug)]
 struct Statement {
@@ -85,14 +142,16 @@ struct Section {
 }
 
 /// Emit the traceability report, failing if a requirement's section is uncited.
-pub fn run(spec_dir: &Path, version: &str, source_root: &Path) -> Result<()> {
-    let citations = collect_citations(source_root)?;
+pub fn run(spec_dir: &Path, version: &str, repo_root: &Path) -> Result<()> {
+    let citations = collect_citations(repo_root)?;
 
     let mut report = String::new();
     let mut uncited: Vec<String> = Vec::new();
+    let mut unchecked: Vec<String> = Vec::new();
     let mut stale: Vec<String> = Vec::new();
     let mut total = 0usize;
     let mut covered = 0usize;
+    let mut checked = 0usize;
     let mut traced: std::collections::BTreeSet<(&'static str, String)> = Default::default();
 
     for document in DOCUMENTS {
@@ -120,9 +179,26 @@ pub fn run(spec_dir: &Path, version: &str, source_root: &Path) -> Result<()> {
                 .get(&(document.prefix, section.key.clone()))
                 .map(Vec::as_slice)
                 .unwrap_or_default();
+            let strongest = cited.iter().map(|c| c.evidence).max();
+            let sites: Vec<String> = cited
+                .iter()
+                .map(|c| format!("{} ({})", c.file, c.evidence.mark()))
+                .collect();
             let exempt = NOT_OURS
                 .iter()
                 .find(|(p, k, _)| *p == document.prefix && *k == section.key);
+
+            if strongest.is_some_and(Evidence::runs) {
+                checked += section.statements.len();
+            } else if !cited.is_empty() && exempt.is_none() {
+                unchecked.push(format!(
+                    "  - [{} §{}] — {} requirement(s), named only by {}",
+                    document.prefix,
+                    section.key,
+                    section.statements.len(),
+                    sites.join(", ")
+                ));
+            }
 
             let mark = match (cited.is_empty(), exempt) {
                 (false, Some(_)) => {
@@ -132,14 +208,14 @@ pub fn run(spec_dir: &Path, version: &str, source_root: &Path) -> Result<()> {
                         "  - [{} §{}] is exempted in NOT_OURS and cited by {}; drop the exemption",
                         document.prefix,
                         section.key,
-                        cited.join(", ")
+                        sites.join(", ")
                     ));
                     covered += section.statements.len();
                     "STALE"
                 }
                 (false, None) => {
                     covered += section.statements.len();
-                    "cited"
+                    strongest.map_or("cited", Evidence::mark)
                 }
                 (true, Some(_)) => "n/a",
                 (true, None) => {
@@ -151,7 +227,7 @@ pub fn run(spec_dir: &Path, version: &str, source_root: &Path) -> Result<()> {
                         document.prefix,
                         section.key,
                         section.statements.len(),
-                        source_root.display(),
+                        repo_root.display(),
                         path.display(),
                         section.statements[0].line,
                         excerpt(&section.statements[0].text),
@@ -170,7 +246,7 @@ pub fn run(spec_dir: &Path, version: &str, source_root: &Path) -> Result<()> {
             if let Some((_, _, why)) = exempt {
                 let _ = writeln!(report, "           ↳ not ours: {why}");
             }
-            for by in cited {
+            for by in &sites {
                 let _ = writeln!(report, "           ↳ {by}");
             }
         }
@@ -180,6 +256,16 @@ pub fn run(spec_dir: &Path, version: &str, source_root: &Path) -> Result<()> {
     println!(
         "\n{covered}/{total} normative statements sit in a section this implementation cites."
     );
+    println!(
+        "{checked}/{total} sit in a section a test or a conformance check names \
+         (floor {MIN_CHECKED})."
+    );
+    if !unchecked.is_empty() {
+        println!(
+            "\nNamed, but only by a doc comment — a claim rather than evidence (ROADMAP B-03):\n{}",
+            unchecked.join("\n")
+        );
+    }
 
     // An exemption for a section that carries no requirement at all is the other kind of stale: it
     // describes a gap the document does not have.
@@ -195,6 +281,14 @@ pub fn run(spec_dir: &Path, version: &str, source_root: &Path) -> Result<()> {
         bail!(
             "the traceability exemptions are out of date:\n{}",
             stale.join("\n")
+        );
+    }
+    if checked < MIN_CHECKED {
+        bail!(
+            "{checked} requirement(s) are named by a test or a conformance check, and the floor is \
+             {MIN_CHECKED}. Something that used to be covered by a test is not any more. Restore \
+             the coverage rather than lowering `MIN_CHECKED` in xtask/src/trace.rs — the floor is a \
+             ratchet, and lowering it is how a coverage number becomes a decoration."
         );
     }
     if !uncited.is_empty() {
@@ -291,17 +385,33 @@ fn is_normative(line: &str) -> bool {
         .any(|word| KEYWORDS.contains(&word))
 }
 
-/// Every `[Prefix §Section]` citation in the source tree, and which file makes it.
-fn collect_citations(root: &Path) -> Result<BTreeMap<(&'static str, String), Vec<String>>> {
-    let mut out: BTreeMap<(&'static str, String), Vec<String>> = BTreeMap::new();
-    for file in rust_files(root)? {
+/// The conformance suite, whose `clause` fields are checks rather than claims.
+const SUITE: &str = "src/conformance/suite.rs";
+
+/// Every `[Prefix §Section]` citation in the tree, which file makes it, and how strong it is.
+///
+/// `src/` and `tests/` both, because an integration test naming a section is exactly the evidence a
+/// doc comment is not.
+fn collect_citations(root: &Path) -> Result<BTreeMap<(&'static str, String), Vec<Citation>>> {
+    let mut out: BTreeMap<(&'static str, String), Vec<Citation>> = BTreeMap::new();
+    let mut files = rust_files(&root.join("src"))?;
+    files.extend(rust_files(&root.join("tests"))?);
+    files.sort();
+
+    for file in files {
         let source = std::fs::read_to_string(&file)
             .with_context(|| format!("reading {}", file.display()))?;
         let shown = file
-            .strip_prefix(root.parent().unwrap_or(root))
+            .strip_prefix(root)
             .unwrap_or(&file)
             .display()
-            .to_string();
+            .to_string()
+            .replace('\\', "/");
+        // Everything after a file's first `#[cfg(test)]` is test code. Exact for this crate, where
+        // the test module is the last item in every file that has one.
+        let tests_begin = source.find("#[cfg(test)]").unwrap_or(usize::MAX);
+        let is_suite = shown == SUITE;
+
         for document in DOCUMENTS {
             let opener = format!("[{} §", document.prefix);
             for (at, _) in source.match_indices(&opener) {
@@ -317,14 +427,35 @@ fn collect_citations(root: &Path) -> Result<BTreeMap<(&'static str, String), Vec
                 if key.is_empty() {
                     continue;
                 }
+                let evidence = if is_suite && on_a_clause_line(&source, at) {
+                    Evidence::Check
+                } else if shown.starts_with("tests/") || at > tests_begin {
+                    Evidence::Test
+                } else {
+                    Evidence::Mention
+                };
                 let entry = out.entry((document.prefix, key)).or_default();
-                if !entry.contains(&shown) {
-                    entry.push(shown.clone());
+                match entry.iter_mut().find(|c| c.file == shown) {
+                    // One file may both describe a rule and test it; the stronger reading wins.
+                    Some(existing) => existing.evidence = existing.evidence.max(evidence),
+                    None => entry.push(Citation {
+                        file: shown.clone(),
+                        evidence,
+                    }),
                 }
             }
         }
     }
     Ok(out)
+}
+
+/// Whether the citation at `at` is the value of a `clause` field rather than prose around one.
+///
+/// A `Check`'s `clause` is what the suite *asserts against*; the same file's module documentation
+/// cites sections it merely describes, and counting those would make the suite evidence for itself.
+fn on_a_clause_line(source: &str, at: usize) -> bool {
+    let line_start = source[..at].rfind('\n').map_or(0, |i| i + 1);
+    source[line_start..at].contains("clause:")
 }
 
 /// Every `.rs` file under a directory.

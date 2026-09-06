@@ -228,6 +228,9 @@ async fn the_api_is_reachable_under_the_base_path_and_at_the_root() {
 }
 
 #[tokio::test]
+// `[Def §Token endpoint discovery]`: "VTNs MUST still implement at least `/auth/server`, and MAY
+// implement `/auth/token` at their discretion." Without a token, because a client that has no token
+// yet is the only client that needs this endpoint.
 async fn auth_server_is_reachable_without_a_token() {
     let h = Harness::new();
     let (status, body) = h.get("/auth/server", None).await;
@@ -318,6 +321,9 @@ async fn the_token_endpoint_is_a_real_grant_when_the_vtn_runs_one() {
 }
 
 #[tokio::test]
+// `[Def §Problem]`: "On 40x and 500 responses, a VTN SHALL respond with a *problem* object that
+// contains details of the error." The media type is the assertion, not the status: the rule is about
+// every error, so a test naming statuses would only ever cover the ones somebody had met (D-108).
 async fn every_error_carries_a_problem_body_and_a_traceable_id() {
     let h = Harness::new();
     let (status, body, headers) = h.send(Method::GET, "/events/nope", Some(BL), None).await;
@@ -398,6 +404,8 @@ async fn business_logic_may_not_write_reports() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+// `[Def §program and event objects - targeting]`, the read half: "On receipt of a VEN request to
+// read a program or event object that has targets, a VTN SHALL …".
 async fn a_ven_must_name_its_targets_to_see_a_targeted_event() {
     let h = Harness::new();
     h.seed().await;
@@ -798,11 +806,61 @@ async fn an_event_whose_durations_run_backwards_is_refused() {
 }
 
 #[tokio::test]
+// `[Def §Required and optional properties]` — "If a representation sent to the VTN lacks a required
+// property, a VTN SHALL return a 400, Bad Request response" — and `[Def §Message validation]`, which
+// says the same thing from the other end. The body here has no `programName`, and the refusal names
+// the field that was missing rather than merely refusing.
 async fn a_malformed_body_names_the_problem() {
     let h = Harness::new();
     let (status, body) = h.post("/programs", BL, json!({ "wrong": "field" })).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(body["detail"].as_str().unwrap().contains("programName"));
+    let detail = body["detail"].as_str().unwrap();
+    assert!(detail.contains("programName"), "{detail}");
+    // Once, not twice: `serde_json` ends its own message with the position, and naming it in front
+    // as well printed it in every refusal this VTN sent.
+    assert_eq!(detail.matches("at line").count(), 1, "{detail}");
+}
+
+#[tokio::test]
+async fn a_refused_value_is_named_and_not_recited_in_full() {
+    // A refusal that does not say which value it refused sends the reader back to their own request
+    // body to guess; one that echoes two hundred characters of it buries the reason. Both halves are
+    // the assertion.
+    let h = Harness::new();
+
+    let (status, body) = h
+        .post(
+            "/programs",
+            BL,
+            json!({ "programName": "ok", "targets": ["zone-a,north"] }),
+        )
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let detail = body["detail"].as_str().unwrap();
+    assert!(
+        detail.contains("comma"),
+        "the reason is not stated: {detail}"
+    );
+    assert!(
+        detail.contains("zone-a,north"),
+        "the refused value is not named: {detail}"
+    );
+
+    let long = "x".repeat(200);
+    let (status, body) = h
+        .post("/programs", BL, json!({ "programName": long }))
+        .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let detail = body["detail"].as_str().unwrap();
+    assert!(detail.contains("1..=128"), "{detail}");
+    assert!(
+        !detail.contains(&long),
+        "the whole rejected value was recited back: {detail}"
+    );
+    assert!(
+        detail.contains('…'),
+        "and it was not marked as abridged: {detail}"
+    );
 }
 
 #[tokio::test]
@@ -813,6 +871,8 @@ async fn limit_beyond_the_schema_maximum_is_rejected() {
 }
 
 #[tokio::test]
+// `[Def §Webhooks]`: "The VTN MUST validate that an HTTPS schema is used for the callback URL of
+// the webhook subscription that is created and/or updated."
 async fn a_webhook_callback_must_be_https_and_public() {
     let h = Harness::new();
     for url in [
@@ -1147,6 +1207,10 @@ async fn a_target_query_narrows_the_owned_collections() {
 }
 
 #[tokio::test]
+// `[Notifiers §7.1]` — "The `WEBHOOK` notifier binding key MUST be provided by the VTN" — and
+// `[Notifiers §notifiersResponse]` and `[Def §Information Model]`, which both say it MUST be `true`.
+// A client asking "can I subscribe?" gets an answer here or gets none at all; the surveyed peer
+// omits the key entirely.
 async fn notifiers_always_advertise_webhooks() {
     let h = Harness::new();
     let (status, body) = h.get("/notifiers", Some(VEN_A)).await;
@@ -1286,6 +1350,8 @@ async fn programme_scoped_topics_are_business_logic_only() {
 }
 
 #[tokio::test]
+// `[Notifiers §8]`: "A VTN that supports a notifier binding based on a topic-oriented protocol
+// MUST support all of the topic-name `GET` endpoints detailed below."
 async fn a_ven_may_only_ask_for_its_own_scoped_topics() {
     let storage = MemoryStorage::shared();
     let auth = StaticTokenAuth::new("http://vtn.test/auth/token")
@@ -1421,10 +1487,17 @@ async fn targets_accept_both_repeated_and_comma_separated_forms() {
 
 #[tokio::test]
 async fn an_event_survives_a_round_trip_through_the_api() {
+    // Also `[Def §Object Metadata]` — "a VTN SHALL populate object representations with the above
+    // fields on object creation" — and `[Def §POST and PUT]`, which says the VTN ignores an
+    // `objectID`, `createdDateTime` or `modificationDateTime` a client sends. Both are asserted
+    // below: the body names all three, and none of the values it names survives.
     let h = Harness::new();
     let (program_id, _) = h.seed().await;
 
     let sent = json!({
+        "id": "client-chosen-id",
+        "createdDateTime": "1999-01-01T00:00:00Z",
+        "modificationDateTime": "1999-01-01T00:00:00Z",
         "programID": program_id,
         "eventName": "day-ahead prices",
         "priority": 10,
@@ -1477,7 +1550,23 @@ async fn an_event_survives_a_round_trip_through_the_api() {
         fetched["intervals"][0]["payloads"][0]["values"][0],
         json!(0.17)
     );
+
+    // The metadata the VTN owns: present, well formed, and *not* what the client asked for.
     assert_eq!(fetched["objectType"], "EVENT");
+    for key in ["id", "createdDateTime", "modificationDateTime"] {
+        assert!(
+            fetched[key].as_str().is_some_and(|v| !v.is_empty()),
+            "the VTN did not stamp {key} on creation"
+        );
+        assert_ne!(
+            fetched[key], sent[key],
+            "the VTN kept the {key} the client sent instead of minting its own"
+        );
+    }
+    assert_eq!(
+        fetched["createdDateTime"], fetched["modificationDateTime"],
+        "a freshly created object has not been modified since"
+    );
 }
 
 #[tokio::test]
@@ -2017,6 +2106,9 @@ async fn the_broker_authenticates_a_client_against_its_openadr_credential() {
 }
 
 #[tokio::test]
+// `[Notifiers §9.4]`: "A VTN MUST prevent a VEN from subscribing to topics that would expose
+// objects the VEN is not authorized to access." This is the callback the broker asks; `tests/broker.rs`
+// asserts the same rule with a real broker actually enforcing it.
 async fn a_ven_may_subscribe_only_to_its_own_topics() {
     // The specification's one MUST for messaging notifiers: a VTN must prevent a VEN subscribing to
     // topics that would expose objects it is not authorized to see. Per-VEN topics are only privacy

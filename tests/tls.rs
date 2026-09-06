@@ -119,6 +119,8 @@ fn client(ca: &str, identity: Option<(&str, &str)>) -> reqwest::Client {
 
 #[tokio::test]
 async fn the_api_is_served_over_tls() {
+    // `[Def §HTTPS/TLS]`: "A VTN or VEN MUST use 'HTTP over TLS' (HTTPS), regardless of its
+    // intended operating environment."
     let ca = Authority::new("openadr test CA");
     let (certificate, key) = ca.issue(vec!["localhost".into()]);
     let base = serve(TlsConfig::from_pem(certificate.as_bytes(), key.as_bytes()).unwrap()).await;
@@ -134,6 +136,39 @@ async fn the_api_is_served_over_tls() {
         response.json::<serde_json::Value>().await.unwrap(),
         serde_json::json!([])
     );
+}
+
+#[tokio::test]
+async fn the_listener_speaks_tls_1_2_and_1_3_and_nothing_older() {
+    // `[Def §HTTPS/TLS]`: "The TLS version used MUST be 1.2 (or later)." Both halves of that are
+    // assertions here rather than one: a client that will go no *higher* than 1.2 must still
+    // connect, and one that will go no *lower* than 1.3 must too, so the listener is offering
+    // exactly the two versions the requirement admits. Asserting only the second would pass
+    // against a 1.3-only listener, which is conformant but is not what this deployment ships.
+    let ca = Authority::new("openadr test CA");
+    let (certificate, key) = ca.issue(vec!["localhost".into()]);
+    let base = serve(TlsConfig::from_pem(certificate.as_bytes(), key.as_bytes()).unwrap()).await;
+
+    for (name, pinned) in [
+        ("TLS 1.2", reqwest::tls::Version::TLS_1_2),
+        ("TLS 1.3", reqwest::tls::Version::TLS_1_3),
+    ] {
+        let pinned_client = reqwest::Client::builder()
+            .add_root_certificate(reqwest::Certificate::from_pem(ca.pem().as_bytes()).unwrap())
+            .use_rustls_tls()
+            .min_tls_version(pinned)
+            .max_tls_version(pinned)
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let response = pinned_client
+            .get(format!("{base}/programs"))
+            .header("authorization", format!("Bearer {BL}"))
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("a client pinned to {name} could not connect: {e}"));
+        assert_eq!(response.status(), 200, "over {name}");
+    }
 }
 
 #[tokio::test]

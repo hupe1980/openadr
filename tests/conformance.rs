@@ -19,6 +19,8 @@
 
 use std::sync::Arc;
 
+use axum::http::StatusCode;
+use futures_util::StreamExt as _;
 use openadr::{
     conformance::{Credential, Outcome, Runner, Severity, Target, checks},
     vtn::{
@@ -240,78 +242,678 @@ async fn a_run_with_no_credentials_at_all_still_checks_what_it_can() {
 // A suite that cannot fail is not a suite
 // ---------------------------------------------------------------------------
 
-/// Run against a VTN with one behaviour switched off, and return which checks failed.
-async fn failures_with(configure: impl FnOnce(VtnConfig) -> VtnConfig) -> Vec<String> {
-    let base = start(configure).await;
-    let report = Runner::new(full_target(&base)).unwrap().run().await;
-    report.failures().map(|f| f.check.id.to_string()).collect()
-}
-
-#[tokio::test]
-async fn switching_off_caching_is_caught() {
-    let failed = failures_with(|c| VtnConfig {
-        http_caching: false,
-        ..c
-    })
-    .await;
-    assert!(
-        failed.contains(&"etag-and-conditional-read".to_string()),
-        "a VTN with no ETag passed the caching check: {failed:?}"
-    );
-    // And nothing else, because caching is an extension and it is the only thing that changed.
-    assert_eq!(failed.len(), 1, "{failed:?}");
-}
-
-#[tokio::test]
-async fn switching_off_the_programme_name_lookup_is_caught() {
-    let failed = failures_with(|c| VtnConfig {
-        program_name_lookup: false,
-        ..c
-    })
-    .await;
-    assert_eq!(
-        failed,
-        vec!["program-name-lookup".to_string()],
-        "an extension that was switched off was not detected: {failed:?}"
-    );
-}
-
-/// Serve the suite a VTN whose responses have had one header stripped.
+/// How a VTN is broken for one run.
 ///
-/// There is no configuration switch for any of these: the VTN always sets them. A layer that
-/// removes the header is what an implementation that never set it looks like from the outside,
-/// which is the only vantage point the suite has `[D-072]`.
-async fn failures_without_headers(
-    header_names: &'static [&'static str],
-    only_on: Option<&'static str>,
-) -> Vec<String> {
-    let base = start(|c| c).await;
+/// Five shapes, because that is what it takes to reach the behaviours from outside. A conformance
+/// suite has no vantage point inside the server, so a defect has to be *simulated* on the wire —
+/// and a simulation that reaches only the behaviours with a configuration switch would measure the
+/// switches rather than the checks.
+enum Break {
+    /// A switch the VTN itself has.
+    Config(fn(VtnConfig) -> VtnConfig),
+    /// The request, on its way in: what a VTN that ignores a parameter or a header looks like.
+    Request(fn(&str, &mut String, &mut axum::http::HeaderMap)),
+    /// The status, on its way out.
+    Status(fn(&axum::http::Method, &str, StatusCode) -> StatusCode),
+    /// The response headers.
+    Header(fn(&str, StatusCode, &mut axum::http::HeaderMap)),
+    /// The JSON body, parsed and re-serialised. The *request* body comes too, because the
+    /// interesting defects here are the ones where a VTN believes what a client told it.
+    Body(fn(&axum::http::Method, &str, StatusCode, &serde_json::Value, &mut serde_json::Value)),
+    /// Every credential is read as business logic.
+    ///
+    /// A variant of its own rather than a `Request` rewrite, because it needs something no `fn`
+    /// pointer can carry: a real business-logic token, fetched from the VTN before the proxy
+    /// starts. This is D-121 as an outsider sees it — the defect this project shipped, where a
+    /// scope was read as an *identity* and a monitoring credential became the one role object
+    /// privacy does not apply to.
+    EveryCredentialIsBusinessLogic,
+}
 
+/// One way a VTN can be wrong, and the checks that must catch it.
+///
+/// `caught_by` is exact in both directions. A check missing from it is a check that did not notice
+/// the defect it exists for; a check listed that also fires on some *other* fault is a check whose
+/// failure does not mean what its title says. Both are worth failing the build over, and the second
+/// is the one nobody looks for.
+struct Fault {
+    /// What is broken, in the words an operator would use.
+    name: &'static str,
+    /// How the break is made.
+    how: Break,
+    /// Exactly the checks that must fail.
+    caught_by: &'static [&'static str],
+}
+
+/// The defects this suite has been shown to catch.
+///
+/// Every entry is a real implementation mistake rather than an invented one: five of them were
+/// found in a *peer* VTN by running this suite against it, and the rest are shapes this project has
+/// made itself and recorded in `concepts/DECISIONS.md`.
+const FAULTS: &[Fault] = &[
+    // -- switches the VTN has ------------------------------------------------
+    Fault {
+        name: "no ETag on reads",
+        how: Break::Config(|c| VtnConfig {
+            http_caching: false,
+            ..c
+        }),
+        caught_by: &["etag-and-conditional-read"],
+    },
+    Fault {
+        name: "no programName lookup",
+        how: Break::Config(|c| VtnConfig {
+            program_name_lookup: false,
+            ..c
+        }),
+        caught_by: &["program-name-lookup"],
+    },
+    // -- a parameter that is accepted and ignored ----------------------------
+    //
+    // D-045's shape, and the one the suite exists to make visible: nothing errors, and the caller
+    // believes it has filtered.
+    Fault {
+        name: "?eventID= is accepted and ignored",
+        how: Break::Request(|_, target, _| strip_param(target, "eventID")),
+        caught_by: &["report-filters-by-event"],
+    },
+    Fault {
+        name: "?targets= is accepted and ignored",
+        how: Break::Request(|_, target, _| strip_param(target, "targets")),
+        // Not `ungranted-targets-are-invisible`: with the parameter gone the VEN names no targets
+        // at all, so the targeted event is hidden and the check passes — correctly, for a reason
+        // that is not the one it is about. A fault a check legitimately does not see is a fact
+        // about the check worth writing down rather than an omission to paper over.
+        caught_by: &[
+            "granted-targets-are-visible",
+            "target-hiding-on-reads",
+            "targets-accept-both-forms",
+        ],
+    },
+    Fault {
+        name: "?programID= is accepted and ignored",
+        how: Break::Request(|_, target, _| strip_param(target, "programID")),
+        caught_by: &["filters-are-additive"],
+    },
+    Fault {
+        name: "?skip= is accepted and ignored",
+        how: Break::Request(|_, target, _| strip_param(target, "skip")),
+        caught_by: &["pagination-is-complete-and-ordered"],
+    },
+    Fault {
+        name: "?active= is accepted and ignored",
+        how: Break::Request(|_, target, _| strip_param(target, "active")),
+        caught_by: &["active-excludes-transpired-events"],
+    },
+    Fault {
+        name: "?limit= beyond the maximum is clamped rather than refused",
+        how: Break::Request(|_, target, _| {
+            *target = target.replace("limit=500", "limit=50");
+        }),
+        caught_by: &["limit-is-capped-at-fifty"],
+    },
+    Fault {
+        name: "the Content-Type of a request body is not read",
+        how: Break::Request(|_, _, headers| {
+            if headers.contains_key(axum::http::header::CONTENT_TYPE) {
+                headers.insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("application/json"),
+                );
+            }
+        }),
+        caught_by: &["foreign-media-type-is-refused"],
+    },
+    // -- headers a VTN never set ---------------------------------------------
+    Fault {
+        name: "a 401 carries no WWW-Authenticate",
+        how: Break::Header(|_, status, headers| {
+            if status == StatusCode::UNAUTHORIZED {
+                headers.remove("www-authenticate");
+            }
+        }),
+        caught_by: &["unauthorized-names-the-scheme"],
+    },
+    Fault {
+        name: "a token response may be stored",
+        how: Break::Header(|path, _, headers| {
+            if path.ends_with("/auth/token") {
+                headers.remove(axum::http::header::CACHE_CONTROL);
+            }
+        }),
+        caught_by: &["token-response-is-not-stored"],
+    },
+    Fault {
+        name: "a read says nothing about caching",
+        how: Break::Header(|path, _, headers| {
+            if path.ends_with("/programs") {
+                headers.remove(axum::http::header::CACHE_CONTROL);
+                headers.remove(axum::http::header::VARY);
+            }
+        }),
+        caught_by: &["reads-declare-a-caching-policy"],
+    },
+    Fault {
+        name: "errors are plain JSON rather than problem+json",
+        how: Break::Header(|_, status, headers| {
+            if status.is_client_error() || status.is_server_error() {
+                headers.insert(
+                    axum::http::header::CONTENT_TYPE,
+                    axum::http::HeaderValue::from_static("application/json"),
+                );
+            }
+        }),
+        caught_by: &["problem-uses-the-rfc-9457-media-type"],
+    },
+    // -- statuses ------------------------------------------------------------
+    Fault {
+        name: "a missing programme answers 403",
+        how: Break::Status(|method, path, status| {
+            if status == StatusCode::NOT_FOUND
+                && method == axum::http::Method::GET
+                && path.contains("/programs/")
+            {
+                return StatusCode::FORBIDDEN;
+            }
+            status
+        }),
+        // Three checks read a programme by id and expect a 404, so three notice. That is not a
+        // duplication to trim: `problem-uses-the-rfc-9457-media-type` is about the media type of an
+        // error and `programme-delete-leaves-no-orphan` about a cascade, and both need a 404 to
+        // *get* to what they are about.
+        caught_by: &[
+            "missing-object-is-404-problem",
+            "problem-uses-the-rfc-9457-media-type",
+            "programme-delete-leaves-no-orphan",
+        ],
+    },
+    Fault {
+        name: "an object hidden by targeting answers 403, confirming it exists",
+        how: Break::Status(|method, path, status| {
+            if status == StatusCode::NOT_FOUND
+                && method == axum::http::Method::GET
+                && path.contains("/events/")
+            {
+                return StatusCode::FORBIDDEN;
+            }
+            status
+        }),
+        caught_by: &[
+            "hidden-object-is-404-not-403",
+            "programme-delete-leaves-no-orphan",
+        ],
+    },
+    Fault {
+        name: "a duplicate programName is accepted",
+        how: Break::Status(|method, path, status| {
+            if status == StatusCode::CONFLICT
+                && method == axum::http::Method::POST
+                && path.ends_with("/programs")
+            {
+                return StatusCode::CREATED;
+            }
+            status
+        }),
+        caught_by: &["program-name-is-unique"],
+    },
+    Fault {
+        name: "an event naming no programme is accepted",
+        how: Break::Status(|method, path, status| {
+            if status == StatusCode::BAD_REQUEST
+                && method == axum::http::Method::POST
+                && path.ends_with("/events")
+            {
+                return StatusCode::CREATED;
+            }
+            status
+        }),
+        // Only this one: `malformed-body-is-400-problem` posts to `/programs`, so a break confined
+        // to `/events` leaves it alone.
+        caught_by: &["event-needs-a-programme"],
+    },
+    Fault {
+        name: "a VEN's topic request for another VEN is granted",
+        how: Break::Status(|method, path, status| {
+            if method == axum::http::Method::GET && path.contains("/notifiers/mqtt/topics/vens/") {
+                return StatusCode::OK;
+            }
+            status
+        }),
+        caught_by: &["mqtt-foreign-ven-topics-refused"],
+    },
+    // -- bodies --------------------------------------------------------------
+    Fault {
+        name: "GET /notifiers omits the WEBHOOK key",
+        how: Break::Body(|_, path, _, _, body| {
+            if path.ends_with("/notifiers")
+                && let Some(object) = body.as_object_mut()
+            {
+                object.remove("WEBHOOK");
+            }
+        }),
+        caught_by: &["notifiers-webhook-key"],
+    },
+    Fault {
+        name: "the MQTT binding names no URIS",
+        how: Break::Body(|_, path, _, _, body| {
+            if path.ends_with("/notifiers")
+                && let Some(mqtt) = body.get_mut("MQTT").and_then(|m| m.as_object_mut())
+            {
+                mqtt.remove("URIS");
+            }
+        }),
+        caught_by: &["mqtt-binding-shape"],
+    },
+    Fault {
+        name: "a created object carries no objectType",
+        how: Break::Body(|method, path, status, _, body| {
+            if method == axum::http::Method::POST
+                && status == StatusCode::CREATED
+                && path.ends_with("/programs")
+                && let Some(object) = body.as_object_mut()
+            {
+                object.remove("objectType");
+            }
+        }),
+        caught_by: &["create-stamps-metadata"],
+    },
+    Fault {
+        name: "PUT leaves modificationDateTime where it was",
+        how: Break::Body(|method, path, _, _, body| {
+            if method == axum::http::Method::PUT
+                && path.contains("/programs/")
+                && let Some(created) = body.get("createdDateTime").cloned()
+                && let Some(object) = body.as_object_mut()
+            {
+                object.insert("modificationDateTime".into(), created);
+            }
+        }),
+        caught_by: &["update-moves-modification-time"],
+    },
+    Fault {
+        name: "P9999Y is normalised into an ordinary 9999-year span",
+        how: Break::Body(|_, _, _, _, body| {
+            rewrite_strings(body, |s| {
+                if s == "P9999Y" {
+                    Some("P9999Y0M0DT0H0M0S".to_string())
+                } else {
+                    None
+                }
+            })
+        }),
+        caught_by: &["forever-duration-round-trips"],
+    },
+    Fault {
+        name: "the 0001-01-01 sentinel is resolved to an ordinary date on the way out",
+        how: Break::Body(|_, _, _, _, body| {
+            rewrite_strings(body, |s| {
+                s.starts_with("0001-01-01")
+                    .then(|| "2026-01-01T00:00:00Z".to_string())
+            })
+        }),
+        caught_by: &["now-sentinel-round-trips"],
+    },
+    Fault {
+        name: "a problem body carries no instance",
+        how: Break::Body(|_, _, status, _, body| {
+            if (status.is_client_error() || status.is_server_error())
+                && let Some(object) = body.as_object_mut()
+            {
+                object.remove("instance");
+            }
+        }),
+        caught_by: &["problem-carries-a-traceable-instance"],
+    },
+    // -- refusals that were not refusals -------------------------------------
+    Fault {
+        name: "an unauthenticated write is accepted",
+        how: Break::Status(|method, path, status| {
+            if status == StatusCode::UNAUTHORIZED
+                && method == axum::http::Method::POST
+                && path.ends_with("/programs")
+            {
+                return StatusCode::CREATED;
+            }
+            status
+        }),
+        caught_by: &["unauthenticated-write-refused"],
+    },
+    Fault {
+        name: "a body missing a required field is accepted",
+        how: Break::Status(|method, path, status| {
+            if status == StatusCode::BAD_REQUEST
+                && method == axum::http::Method::POST
+                && path.ends_with("/programs")
+            {
+                return StatusCode::CREATED;
+            }
+            status
+        }),
+        caught_by: &["malformed-body-is-400-problem"],
+    },
+    Fault {
+        name: "a report naming no event is accepted",
+        how: Break::Status(|method, path, status| {
+            if status == StatusCode::BAD_REQUEST
+                && method == axum::http::Method::POST
+                && path.ends_with("/reports")
+            {
+                return StatusCode::CREATED;
+            }
+            status
+        }),
+        caught_by: &["report-needs-an-event"],
+    },
+    Fault {
+        name: "a VEN obtains a collection-wide topic",
+        how: Break::Status(|method, path, status| {
+            if method == axum::http::Method::GET
+                && path.contains("/notifiers/mqtt/topics/")
+                && !path.contains("/topics/vens/")
+            {
+                return StatusCode::OK;
+            }
+            status
+        }),
+        caught_by: &["mqtt-collection-topics-are-business-logic-only"],
+    },
+    // -- a VTN that believes what a client tells it ---------------------------
+    Fault {
+        name: "a client-chosen id and createdDateTime are honoured",
+        how: Break::Body(|method, path, status, sent, body| {
+            if method == axum::http::Method::POST
+                && status == StatusCode::CREATED
+                && path.ends_with("/programs")
+                && let Some(object) = body.as_object_mut()
+            {
+                for field in ["id", "createdDateTime"] {
+                    if let Some(claimed) = sent.get(field) {
+                        object.insert(field.into(), claimed.clone());
+                    }
+                }
+            }
+        }),
+        caught_by: &["create-ignores-client-metadata"],
+    },
+    Fault {
+        name: "a report is filed as whichever client the body claims",
+        how: Break::Body(|method, path, status, sent, body| {
+            if method == axum::http::Method::POST
+                && status == StatusCode::CREATED
+                && path.ends_with("/reports")
+                && let Some(claimed) = sent.get("clientID")
+                && let Some(object) = body.as_object_mut()
+            {
+                object.insert("clientID".into(), claimed.clone());
+            }
+        }),
+        caught_by: &["report-is-stamped-not-claimed"],
+    },
+    Fault {
+        name: "a VEN's own claim to a target is honoured",
+        how: Break::Body(|method, path, status, sent, body| {
+            // Both collections at once, because it is one mistake: believing a `targets` member on
+            // a body the writer is not entitled to set. This crate makes it unrepresentable —
+            // `VEN_VEN_REQUEST` has no such member — so the only way to see the check fail is to
+            // put the field back on the way out.
+            if method == axum::http::Method::POST
+                && status == StatusCode::CREATED
+                && (path.ends_with("/vens") || path.ends_with("/resources"))
+                && let Some(claimed) = sent.get("targets")
+                && let Some(object) = body.as_object_mut()
+            {
+                object.insert("targets".into(), claimed.clone());
+            }
+        }),
+        caught_by: &[
+            "ven-cannot-grant-a-resource-targets",
+            "ven-cannot-grant-itself-targets",
+        ],
+    },
+    // -- data that does not survive the round trip ---------------------------
+    Fault {
+        name: "prices are held as binary floats",
+        how: Break::Body(|_, _, _, _, body| {
+            // What an `f64` pipeline does to a tenth. The value is a settled amount.
+            rewrite_numbers(body, |n| (n == "0.1").then_some(0.100_000_000_000_000_03))
+        }),
+        caught_by: &["decimal-prices-are-exact"],
+    },
+    Fault {
+        name: "an event's interval ids are reassigned",
+        how: Break::Body(|method, path, status, _, body| {
+            if method == axum::http::Method::POST
+                && status == StatusCode::CREATED
+                && path.ends_with("/events")
+                && let Some(intervals) = body.get_mut("intervals").and_then(|i| i.as_array_mut())
+            {
+                for (n, interval) in intervals.iter_mut().enumerate() {
+                    if let Some(object) = interval.as_object_mut() {
+                        object.insert("id".into(), serde_json::json!(100 + n));
+                    }
+                }
+            }
+        }),
+        caught_by: &["interval-payloads-round-trip"],
+    },
+    Fault {
+        name: "a report comes back without its resources",
+        how: Break::Body(|method, path, _, _, body| {
+            if method == axum::http::Method::GET
+                && path.contains("/reports/")
+                && let Some(object) = body.as_object_mut()
+            {
+                object.remove("resources");
+            }
+        }),
+        caught_by: &["report-round-trips"],
+    },
+    Fault {
+        name: "a VEN's own topic set omits DELETE",
+        how: Break::Body(|_, path, _, _, body| {
+            if path.contains("/notifiers/mqtt/topics/vens/")
+                && let Some(topics) = body.get_mut("topics").and_then(|t| t.as_object_mut())
+            {
+                topics.remove("DELETE");
+            }
+        }),
+        caught_by: &["mqtt-ven-scoped-topics"],
+    },
+    Fault {
+        name: "an object with no targets is hidden as if it had some",
+        how: Break::Body(|method, path, _, _, body| {
+            if method == axum::http::Method::GET
+                && path.ends_with("/programs")
+                && let Some(items) = body.as_array_mut()
+            {
+                items.retain(|p| {
+                    p["targets"]
+                        .as_array()
+                        .is_some_and(|targets| !targets.is_empty())
+                });
+            }
+        }),
+        // Three, because every programme the suite creates is untargeted: the two checks that walk
+        // the collection lose their own objects along with everybody's.
+        caught_by: &[
+            "pagination-is-complete-and-ordered",
+            "program-name-lookup",
+            "untargeted-objects-are-visible",
+        ],
+    },
+    Fault {
+        name: "a resource reports a venID that is not its own",
+        how: Break::Body(|method, path, _, _, body| {
+            if method == axum::http::Method::GET
+                && path.ends_with("/resources")
+                && let Some(items) = body.as_array_mut()
+            {
+                for item in items {
+                    if let Some(object) = item.as_object_mut() {
+                        object.insert("venID".into(), serde_json::json!("not-this-vens"));
+                    }
+                }
+            }
+        }),
+        caught_by: &["ven-reads-only-its-own-resources"],
+    },
+    // -- the one that is a role, not a rule ----------------------------------
+    Fault {
+        name: "every credential is read as business logic",
+        how: Break::EveryCredentialIsBusinessLogic,
+        // Thirteen checks, which is what D-121 actually cost. Not
+        // `ven-cannot-grant-itself-targets` or `ven-cannot-grant-a-resource-targets`: a VEN cannot
+        // grant itself a target because `VEN_VEN_REQUEST` has no `targets` member, so the
+        // privilege is unreachable rather than merely unauthorised and no amount of role confusion
+        // reaches it (principle 2). And not `ven-reads-only-its-own-resources`, which establishes
+        // ownership by asking which VENs the caller owns — a question this fault also answers
+        // wrongly, so the check compares one wrong answer with another and agrees with itself.
+        caught_by: &[
+            "hidden-object-is-404-not-403",
+            "mqtt-collection-topics-are-business-logic-only",
+            "mqtt-foreign-ven-topics-refused",
+            "report-filters-by-event",
+            "report-is-stamped-not-claimed",
+            "report-needs-an-event",
+            "report-round-trips",
+            "target-hiding-on-reads",
+            "ungranted-targets-are-invisible",
+            "ven-cannot-write-programmes",
+            "ven-reads-only-its-own-reports",
+            "ven-reads-only-its-own-subscriptions",
+            "ven-reads-only-its-own-vens",
+        ],
+    },
+];
+
+/// Drop every occurrence of a query parameter, keeping the rest of the target intact.
+fn strip_param(target: &mut String, name: &str) {
+    let Some((path, query)) = target.split_once('?') else {
+        return;
+    };
+    let kept: Vec<&str> = query
+        .split('&')
+        .filter(|pair| {
+            let key = pair.split('=').next().unwrap_or(pair);
+            key != name
+        })
+        .collect();
+    *target = if kept.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}?{}", kept.join("&"))
+    };
+}
+
+/// Apply `f` to every number anywhere in a JSON value, replacing it where `f` answers.
+///
+/// The number is offered as the text `serde_json` would print, because that is what a check about
+/// exactness compares: `0.1` and `0.1000000000000000055511151231257827` are the same `f64` and a
+/// different answer.
+fn rewrite_numbers(value: &mut serde_json::Value, f: fn(&str) -> Option<f64>) {
+    match value {
+        serde_json::Value::Number(n) => {
+            if let Some(replacement) = f(&n.to_string())
+                && let Some(number) = serde_json::Number::from_f64(replacement)
+            {
+                *value = serde_json::Value::Number(number);
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(|i| rewrite_numbers(i, f)),
+        serde_json::Value::Object(fields) => {
+            fields.values_mut().for_each(|v| rewrite_numbers(v, f))
+        }
+        _ => {}
+    }
+}
+
+/// Apply `f` to every string anywhere in a JSON value, replacing it where `f` answers.
+fn rewrite_strings(value: &mut serde_json::Value, f: fn(&str) -> Option<String>) {
+    match value {
+        serde_json::Value::String(s) => {
+            if let Some(replacement) = f(s) {
+                *s = replacement;
+            }
+        }
+        serde_json::Value::Array(items) => items.iter_mut().for_each(|i| rewrite_strings(i, f)),
+        serde_json::Value::Object(fields) => {
+            fields.values_mut().for_each(|v| rewrite_strings(v, f))
+        }
+        _ => {}
+    }
+}
+
+/// Run the whole suite against a VTN broken one way, and return the ids that failed.
+async fn failures_from(fault: &'static Fault) -> Vec<String> {
+    let base = match fault.how {
+        Break::Config(configure) => start(configure).await,
+        _ => {
+            let upstream = start(|c| c).await;
+            behind_a_fault(&upstream, fault).await
+        }
+    };
+    let report = Runner::new(full_target(&base)).unwrap().run().await;
+    let mut failed: Vec<String> = report.failures().map(|f| f.check.id.to_string()).collect();
+    failed.sort();
+    failed
+}
+
+/// A proxy in front of the VTN that applies one fault to everything passing through it.
+///
+/// The VTN itself is untouched. That is the point: a defect a *configuration* can produce is a
+/// defect this implementation happens to have a switch for, and the checks worth measuring are the
+/// ones about behaviour nobody would ever offer a switch for.
+async fn behind_a_fault(upstream: &str, fault: &'static Fault) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let proxy_base = format!("http://{addr}/openadr3/3.1.0");
-    let upstream = base.trim_end_matches("/openadr3/3.1.0").to_string();
+    let root = upstream.trim_end_matches("/openadr3/3.1.0").to_string();
+
+    // One fault needs something no `fn` pointer can carry: a token the proxy substitutes for
+    // whatever the caller presented.
+    let business_logic = match fault.how {
+        Break::EveryCredentialIsBusinessLogic => Some(
+            business_logic_token(upstream)
+                .await
+                .expect("the fixture VTN issues its own tokens"),
+        ),
+        _ => None,
+    };
 
     let app = axum::Router::new().fallback(axum::routing::any(
         move |request: axum::extract::Request| {
-            let upstream = upstream.clone();
-            async move { relay(&upstream, request, header_names, only_on).await }
+            let root = root.clone();
+            let business_logic = business_logic.clone();
+            async move { relay(&root, request, fault, business_logic.as_deref()).await }
         },
     ));
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-
-    let report = Runner::new(full_target(&proxy_base)).unwrap().run().await;
-    report.failures().map(|f| f.check.id.to_string()).collect()
+    format!("http://{addr}/openadr3/3.1.0")
 }
 
-/// Forward a request upstream and hand back the answer with one header removed.
+/// A real business-logic access token from the VTN's own grant.
+async fn business_logic_token(base: &str) -> Option<String> {
+    let response = reqwest::Client::new()
+        .post(format!("{base}/auth/token"))
+        .form(&[
+            ("grant_type", "client_credentials"),
+            ("client_id", BL_CLIENT),
+            ("client_secret", BL),
+        ])
+        .send()
+        .await
+        .ok()?;
+    let body: serde_json::Value = response.json().await.ok()?;
+    body["access_token"].as_str().map(str::to_string)
+}
+
+/// Forward a request upstream, applying the fault on the way in and on the way out.
 async fn relay(
     upstream: &str,
     request: axum::extract::Request,
-    header_names: &[&str],
-    only_on: Option<&str>,
+    fault: &'static Fault,
+    business_logic: Option<&str>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse as _;
 
@@ -319,110 +921,154 @@ async fn relay(
     let bytes = axum::body::to_bytes(body, usize::MAX)
         .await
         .unwrap_or_default();
-    let url = format!(
-        "{upstream}{}",
-        parts
-            .uri
-            .path_and_query()
-            .map(|p| p.as_str())
-            .unwrap_or("/")
-    );
+    let sent: serde_json::Value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+
+    let mut target = parts
+        .uri
+        .path_and_query()
+        .map(|p| p.as_str().to_string())
+        .unwrap_or_else(|| "/".into());
+    let mut headers = parts.headers.clone();
+    if let Break::Request(apply) = fault.how {
+        apply(parts.uri.path(), &mut target, &mut headers);
+    }
+    // A credential that is presented at all becomes the business-logic one. A request with none
+    // stays anonymous, so "an unauthenticated write is refused" still means what it says.
+    if let (Break::EveryCredentialIsBusinessLogic, Some(token)) = (&fault.how, business_logic)
+        && headers.contains_key(axum::http::header::AUTHORIZATION)
+        && let Ok(value) = axum::http::HeaderValue::from_str(&format!("Bearer {token}"))
+    {
+        headers.insert(axum::http::header::AUTHORIZATION, value);
+    }
 
     let client = reqwest::Client::new();
-    let mut outbound = client.request(parts.method.clone(), &url).body(bytes);
-    for (name, value) in parts.headers.iter() {
+    let mut outbound = client
+        .request(parts.method.clone(), format!("{upstream}{target}"))
+        .body(bytes);
+    for (name, value) in headers.iter() {
         if name != axum::http::header::HOST {
             outbound = outbound.header(name, value);
         }
     }
     let Ok(response) = outbound.send().await else {
-        return axum::http::StatusCode::BAD_GATEWAY.into_response();
+        return StatusCode::BAD_GATEWAY.into_response();
     };
 
-    let status = response.status();
+    let path = parts.uri.path();
+    let mut status = response.status();
     let mut headers = response.headers().clone();
-    if only_on.is_none_or(|path| parts.uri.path().ends_with(path)) {
-        for name in header_names {
-            headers.remove(*name);
-        }
+    let mut body = response.bytes().await.unwrap_or_default().to_vec();
+
+    if let Break::Status(apply) = fault.how {
+        status = apply(&parts.method, path, status);
     }
-    // Whatever the length was, the body is being re-sent as one chunk.
+    if let Break::Header(apply) = fault.how {
+        apply(path, status, &mut headers);
+    }
+    if let Break::Body(apply) = fault.how
+        && let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&body)
+    {
+        apply(&parts.method, path, status, &sent, &mut json);
+        body = serde_json::to_vec(&json).unwrap_or(body);
+    }
+
+    // Whatever the length and encoding were, the body is being re-sent as one plain chunk.
     headers.remove(axum::http::header::CONTENT_LENGTH);
     headers.remove(axum::http::header::TRANSFER_ENCODING);
     headers.remove(axum::http::header::CONTENT_ENCODING);
-    let body = response.bytes().await.unwrap_or_default();
     (status, headers, body).into_response()
 }
 
+/// How many checks must be demonstrably able to fail.
+///
+/// A ratchet, like `trace`'s. It is not 48 and will not be: a few checks describe behaviour that
+/// cannot be simulated from outside the VTN — a VEN reading another VEN's reports needs the *server*
+/// to be wrong, and a proxy cannot invent data it was never sent. Those are named in
+/// `UNFALSIFIABLE_FROM_OUTSIDE` with the reason, so the gap is a list somebody decided rather than
+/// a number nobody noticed.
+const MIN_FALSIFIABLE: usize = 47;
+
+/// Checks no proxy in front of the VTN can make fail, and why.
+///
+/// Written out rather than left as the difference between two numbers: a gap somebody decided is a
+/// gap somebody can argue with, and a gap nobody wrote down is one nobody revisits.
+const UNFALSIFIABLE_FROM_OUTSIDE: &[(&str, &str)] = &[(
+    "auth-server-unauthenticated",
+    "the suite discovers the token endpoint through GET /auth/server, so a fault that breaks it \
+     breaks the run rather than the check. Reaching it needs a VTN wrong in that one way, not a \
+     proxy in front of a right one",
+)];
+
 #[tokio::test]
-async fn a_401_with_no_challenge_is_caught() {
-    let failed = failures_without_headers(&["www-authenticate"], None).await;
+async fn every_break_is_caught_by_exactly_the_checks_that_name_it() {
+    // A suite that passes everything is indistinguishable from a suite that checks nothing, so the
+    // suite is run against VTNs that are deliberately wrong and told which checks must notice
+    // `[D-072]`. Exactly which: a check that fires on a defect it is not about is a check whose
+    // failure does not mean what its title says, and that is the half nobody looks for.
+    // The faults are independent — each gets its own VTN on its own port — so they run together.
+    // Walking them one at a time is twenty-odd full suite runs and a minute and a half, which is
+    // the sort of number that ends with somebody adding `#[ignore]`.
+    // Bounded rather than all at once: every fault is a VTN, a proxy and a full suite walk, and
+    // two dozen of those competing for one runtime is slower than a queue of them.
+    let runs: Vec<(&Fault, Vec<String>)> = futures_util::stream::iter(
+        FAULTS
+            .iter()
+            .map(|fault| async move { (fault, failures_from(fault).await) }),
+    )
+    .buffer_unordered(6)
+    .collect()
+    .await;
+
+    let mut observed: std::collections::BTreeSet<String> = Default::default();
+    // Everything is asserted at the end. One run then reports every correction the table needs,
+    // rather than one per edit against a suite that takes a while to walk.
+    let mut wrong: Vec<String> = Vec::new();
+
+    for (fault, failed) in runs {
+        let mut expected: Vec<String> = fault.caught_by.iter().map(|s| s.to_string()).collect();
+        expected.sort();
+        if failed != expected {
+            wrong.push(format!(
+                "\n  break: {}\n    caught by: {failed:?}\n    expected:  {expected:?}",
+                fault.name
+            ));
+        }
+        observed.extend(failed);
+    }
     assert!(
-        failed.contains(&"unauthorized-names-the-scheme".to_string()),
-        "a 401 with no WWW-Authenticate passed: {failed:?}"
+        wrong.is_empty(),
+        "{} break(s) are not caught by exactly the checks that name them:{}",
+        wrong.len(),
+        wrong.join("")
     );
-}
 
-#[tokio::test]
-async fn a_token_endpoint_that_may_be_stored_is_caught() {
-    let failed = failures_without_headers(&["cache-control"], Some("/auth/token")).await;
-    assert!(
-        failed.contains(&"token-response-is-not-stored".to_string()),
-        "a token response with no Cache-Control passed: {failed:?}"
+    let unproven: Vec<&str> = checks()
+        .iter()
+        .map(|c| c.id)
+        .filter(|id| !observed.contains(*id))
+        .collect();
+    println!(
+        "{} of {} checks have been observed failing against a deliberately broken VTN.\n\
+         Never seen failing: {unproven:?}",
+        observed.len(),
+        checks().len()
     );
-    // And only that one: the header was removed from the token endpoint alone.
-    assert_eq!(failed.len(), 1, "{failed:?}");
-}
-
-#[tokio::test]
-async fn a_read_with_no_caching_policy_is_caught() {
-    // Both, because the check accepts either: a VTN that says nothing about caching *and* nothing
-    // about what the body varies on is the one a shared cache can key by URL alone.
-    let failed = failures_without_headers(&["cache-control", "vary"], Some("/programs")).await;
+    for (id, _) in UNFALSIFIABLE_FROM_OUTSIDE {
+        assert!(
+            !observed.contains(*id),
+            "{id} is listed as unfalsifiable from outside and a fault caught it; drop the entry"
+        );
+        assert!(
+            checks().iter().any(|c| c.id == *id),
+            "{id} is listed as unfalsifiable and is not a check"
+        );
+    }
     assert!(
-        failed.contains(&"reads-declare-a-caching-policy".to_string()),
-        "a read with no Cache-Control and no Vary passed: {failed:?}"
-    );
-}
-
-#[tokio::test]
-async fn a_vtn_that_reads_any_media_type_is_caught() {
-    // The break is at the *request* end, so the relay above cannot make it. This one rewrites the
-    // inbound Content-Type to application/json, which is exactly what a VTN that ignores the header
-    // does.
-    let base = start(|c| c).await;
-    let upstream = base.trim_end_matches("/openadr3/3.1.0").to_string();
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let proxy_base = format!("http://{addr}/openadr3/3.1.0");
-
-    let app = axum::Router::new().fallback(axum::routing::any(
-        move |mut request: axum::extract::Request| {
-            let upstream = upstream.clone();
-            async move {
-                if request
-                    .headers()
-                    .contains_key(axum::http::header::CONTENT_TYPE)
-                {
-                    request.headers_mut().insert(
-                        axum::http::header::CONTENT_TYPE,
-                        axum::http::HeaderValue::from_static("application/json"),
-                    );
-                }
-                relay(&upstream, request, &[], None).await
-            }
-        },
-    ));
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, app).await;
-    });
-
-    let report = Runner::new(full_target(&proxy_base)).unwrap().run().await;
-    let failed: Vec<&str> = report.failures().map(|f| f.check.id).collect();
-    assert!(
-        failed.contains(&"foreign-media-type-is-refused"),
-        "a VTN that reads any media type as JSON passed: {failed:?}"
+        observed.len() >= MIN_FALSIFIABLE,
+        "{} checks are demonstrably able to fail, and the floor is {MIN_FALSIFIABLE}. A check \
+         that has never been seen failing is a check nobody has shown to be a check: add a fault \
+         to FAULTS rather than lowering the floor.",
+        observed.len()
     );
 }
 
@@ -525,61 +1171,5 @@ async fn a_vtn_with_no_broker_skips_the_mqtt_checks_rather_than_failing_them() {
         report
             .to_string()
             .contains("offers no MQTT notifier binding")
-    );
-}
-
-#[tokio::test]
-async fn a_report_filter_that_is_accepted_and_ignored_is_caught() {
-    // The D-045 shape, in someone else's VTN: `?eventID=` is parsed, carried into the query and
-    // never read, so a settlement process asking for one event's reports quietly receives every
-    // report in the system. Nothing errors at either end.
-    //
-    // There is no configuration switch for this, so the VTN is broken with a layer that strips the
-    // parameter before it reaches the router — which is exactly what an implementation that forgot
-    // to apply it does.
-    use axum::http::Uri;
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let base = format!("http://{addr}/openadr3/3.1.0");
-    let vtn = Vtn::builder()
-        .storage(MemoryStorage::shared())
-        .authenticator(Arc::new(
-            InternalAuth::builder(format!("{base}/auth/token"))
-                .client(BL_CLIENT, BL, Scopes::new(Scope::BUSINESS_LOGIC))
-                .unwrap()
-                .client(VEN_CLIENT, VEN, Scopes::new(Scope::VEN))
-                .unwrap()
-                .build(),
-        ))
-        .notifier(Notifiers::new().with(RecordingNotifier::shared()).shared())
-        .config(VtnConfig {
-            base_path: "/openadr3/3.1.0".into(),
-            ..Default::default()
-        })
-        .build();
-
-    let router = vtn.router().layer(axum::middleware::from_fn(
-        |mut request: axum::extract::Request, next: axum::middleware::Next| async move {
-            if request.uri().path().ends_with("/reports") {
-                let mut parts = request.uri().clone().into_parts();
-                parts.path_and_query = request.uri().path().parse().ok();
-                if let Ok(stripped) = Uri::from_parts(parts) {
-                    *request.uri_mut() = stripped;
-                }
-            }
-            next.run(request).await
-        },
-    ));
-
-    tokio::spawn(async move {
-        let _ = axum::serve(listener, router).await;
-    });
-
-    let report = Runner::new(full_target(&base)).unwrap().run().await;
-    let failed: Vec<&str> = report.failures().map(|f| f.check.id).collect();
-    assert!(
-        failed.contains(&"report-filters-by-event"),
-        "a VTN that ignores ?eventID= passed the filter check: {report}"
     );
 }

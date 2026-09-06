@@ -138,16 +138,6 @@ mod crypto;
 ))]
 pub use crypto::install_crypto_provider;
 
-/// The page size the specification caps `limit` at.
-///
-/// Named here rather than reached for through `vtn::store`, because the VEN runtime needs it to
-/// know whether one page was the whole collection and must not depend on the server module to
-/// find out.
-#[cfg(feature = "ven")]
-pub(crate) const fn vtn_page_limit() -> usize {
-    50
-}
-
 /// `std`/`no_std` bridge. Internal, but public so generated code and examples can use it.
 #[doc(hidden)]
 pub mod std_shim {

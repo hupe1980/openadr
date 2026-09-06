@@ -279,11 +279,20 @@ async fn backends() -> Vec<(&'static str, Backend)> {
     }
 
     #[cfg(feature = "postgres")]
-    if let Ok(url) = std::env::var("OPENADR_TEST_POSTGRES") {
-        match openadr::vtn::store::PostgresStorage::open(&url).await {
+    match std::env::var("OPENADR_TEST_POSTGRES") {
+        Ok(url) => match openadr::vtn::store::PostgresStorage::open(&url).await {
             Ok(_) => out.push(("postgres", Backend::Postgres(url))),
             Err(e) => eprintln!("postgres unavailable ({e}); skipping that backend"),
-        }
+        },
+        // Said out loud rather than left to the absence of a row. A measurement is a claim about
+        // the configuration it was taken in, and the published figures for the cloud deployment
+        // come from this backend — a reader comparing their own run against them needs to know
+        // which one they did not take.
+        Err(_) => eprintln!(
+            "note: OPENADR_TEST_POSTGRES is unset, so no PostgreSQL row appears below. The \
+             published figures for the cloud deployment are that backend's; these are not \
+             comparable with them."
+        ),
     }
     out
 }

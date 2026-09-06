@@ -55,7 +55,7 @@ fn main() -> Result<()> {
         "check-paths" => check_paths(),
         "check-problems" => check_problems(),
         "check-suite" => check_suite(),
-        "trace" => trace::run(&spec_dir(), &spec_version()?, &root().join("src")),
+        "trace" => trace::run(&spec_dir(), &spec_version()?, &root()),
         other => {
             let usage = format!(
                 "cargo xtask <command>\n\n\

@@ -817,7 +817,13 @@ impl Query {
         self
     }
 
-    /// Limit the page size. The specification caps this at 50.
+    /// Limit the page size, capped by the schema at
+    /// [`MAX_PAGE_LIMIT`](crate::model::MAX_PAGE_LIMIT).
+    ///
+    /// Worth setting even when the default would do: the schema gives `limit` a *maximum* and no
+    /// *default*, so a VTN sent no `limit` may answer with a page of any size. A caller that infers
+    /// "that was the whole collection" from a page shorter than 50 is reading its own assumption
+    /// rather than the VTN's answer.
     pub fn limit(mut self, limit: usize) -> Self {
         self.pairs.push(("limit".into(), limit.to_string()));
         self
@@ -896,7 +902,7 @@ impl<'c, R: Role, T: DeserializeOwned, Q: Serialize> Collection<'c, R, T, Q> {
     /// fetched sequentially because `skip`/`limit` has no cursor: a parallel fetch could miss or
     /// duplicate a record if the collection changes underneath it.
     pub async fn list_all(&self, query: &Query) -> Result<Vec<T>, ClientError> {
-        const PAGE: usize = 50;
+        const PAGE: usize = crate::model::MAX_PAGE_LIMIT;
         let mut out = Vec::new();
         let mut skip = 0usize;
         loop {
@@ -911,6 +917,9 @@ impl<'c, R: Role, T: DeserializeOwned, Q: Serialize> Collection<'c, R, T, Q> {
                 .await?;
             let received = page.len();
             out.extend(page);
+            // Sound only because `with_page` *named* the limit: the schema caps `limit` but states
+            // no default, so a short page is evidence of the end only when the reader chose the
+            // page size.
             if received < PAGE {
                 return Ok(out);
             }

@@ -95,6 +95,31 @@ struct Jwks {
 }
 
 impl Jwks {
+    /// A key server that answers `500` to everything, and counts the attempts.
+    async fn broken() -> Self {
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let state = fetches.clone();
+        let app = Router::new()
+            .route(
+                "/certs",
+                get(|State(fetches): State<Arc<AtomicUsize>>| async move {
+                    fetches.fetch_add(1, Ordering::SeqCst);
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR
+                }),
+            )
+            .with_state(state);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        Self {
+            url: format!("http://{addr}/certs"),
+            fetches,
+        }
+    }
+
     async fn serve(keys: Value) -> Self {
         let fetches = Arc::new(AtomicUsize::new(0));
         let state = (keys, fetches.clone());
@@ -316,6 +341,80 @@ async fn an_unknown_key_id_refetches_once_and_then_stops() {
         auth.authenticate(Some(&token(valid_claims())))
             .await
             .is_ok()
+    );
+}
+
+#[tokio::test]
+async fn the_claim_the_client_identity_is_read_from_is_configurable() {
+    // `[Def §VEN created object privacy]` says only that the VTN discovers the `clientID` "by means
+    // not specified here". Keycloak puts it in `azp`, many servers in `client_id`, some only in
+    // `sub` — so this is a knob, and a knob nothing exercised. Reading the wrong claim gives a
+    // principal that owns nothing, which looks exactly like a VEN with no objects.
+    let server = Jwks::serve(json!({"keys": [jwk(KID, json!({}))]})).await;
+    let auth = JwtAuthenticator::new(
+        JwtConfig::new(&server.url, "https://sso.test/token")
+            .with_issuer(ISSUER)
+            .with_audiences([AUDIENCE])
+            .with_client_id_claims(["client_id"]),
+    )
+    .unwrap();
+
+    let mut claims = valid_claims();
+    claims["client_id"] = json!("from-client-id");
+    // `azp` is the default's first choice and must lose to the configured claim.
+    claims["azp"] = json!("from-azp");
+    let principal = auth.authenticate(Some(&token(claims))).await.unwrap();
+    assert_eq!(
+        principal.client_id.as_ref().map(|c| c.as_str()),
+        Some("from-client-id"),
+        "the configured claim was ignored in favour of the default order"
+    );
+
+    // And a token carrying none of the configured claims identifies nobody rather than falling
+    // back to one that was not asked for.
+    let mut anonymousish = valid_claims();
+    anonymousish["azp"] = json!("from-azp");
+    let principal = auth.authenticate(Some(&token(anonymousish))).await.unwrap();
+    assert!(
+        principal.client_id.is_none(),
+        "a claim the operator did not configure was read anyway"
+    );
+}
+
+/// An authorization server that is down must not be asked once per incoming request.
+///
+/// `min_refresh_interval` exists so that a stream of tokens naming unknown key ids cannot turn the
+/// VTN into a load generator aimed at the authorization server. It was anchored on the last
+/// *successful* fetch — so while the JWKS was failing there was no last successful fetch to be too
+/// soon after, the limit never applied, and every token opened another request to a server that was
+/// already in trouble. The window that matters for amplification is the last *attempt* (D-137).
+#[tokio::test]
+async fn a_failing_key_server_is_asked_once_per_interval_not_once_per_request() {
+    let server = Jwks::broken().await;
+    let auth = JwtAuthenticator::new(
+        JwtConfig::new(&server.url, "https://sso.test/token")
+            .with_issuer(ISSUER)
+            .with_audiences([AUDIENCE]),
+    )
+    .unwrap();
+
+    for _ in 0..10 {
+        let err = auth
+            .authenticate(Some(&token(valid_claims())))
+            .await
+            .expect_err("a VTN that cannot read the key set must not accept a token");
+        // And it says the VTN could not look, rather than that the credential was bad: the two send
+        // an operator to completely different places.
+        assert!(
+            matches!(err, openadr::vtn::auth::AuthError::Unavailable(_)),
+            "a JWKS that is down was reported as an invalid token: {err}"
+        );
+    }
+
+    assert_eq!(
+        server.fetches.load(Ordering::SeqCst),
+        1,
+        "ten tokens provoked that many fetches against a key server that is already failing"
     );
 }
 

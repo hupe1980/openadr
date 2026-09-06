@@ -418,14 +418,10 @@ pub fn parse_body<T: serde::de::DeserializeOwned>(bytes: &Bytes) -> Result<T, Ap
     if bytes.is_empty() {
         return Err(ApiError::BadRequest("a request body is required".into()));
     }
-    serde_json::from_slice(bytes).map_err(|e| {
-        ApiError::BadRequest(format!(
-            "malformed request body at line {} column {}: {}",
-            e.line(),
-            e.column(),
-            e
-        ))
-    })
+    // `serde_json::Error` already ends its own message with "at line L column C"; naming the
+    // position again in front of it printed it twice in every refusal this VTN has ever sent.
+    serde_json::from_slice(bytes)
+        .map_err(|e| ApiError::BadRequest(format!("malformed request body: {e}")))
 }
 
 /// Check an optional attribute list, which is the shape `program`, `ven` and `resource` use.

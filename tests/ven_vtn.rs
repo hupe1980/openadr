@@ -206,6 +206,78 @@ impl Fixture {
     }
 }
 
+/// A VTN whose *default* page size is smaller than the schema's maximum.
+///
+/// `limit` has a `maximum` of 50 in `openadr3.yaml` and no `default`, so what a VTN returns when it
+/// is sent no `limit` is entirely its own business. This layer makes that concrete: an explicit
+/// `limit` is honoured, and a request without one is answered twenty at a time.
+fn pages_twenty_by_default(router: axum::Router) -> axum::Router {
+    use axum::http::{Request, Uri};
+    router.layer(axum::middleware::from_fn(
+        async |mut request: Request<axum::body::Body>, next: axum::middleware::Next| {
+            let uri = request.uri().clone();
+            let query = uri.query().unwrap_or_default();
+            if !query.split('&').any(|p| p.starts_with("limit=")) {
+                let separator = if query.is_empty() { "" } else { "&" };
+                let rebuilt = format!("{}?{query}{separator}limit=20", uri.path());
+                if let Ok(uri) = rebuilt.parse::<Uri>() {
+                    *request.uri_mut() = uri;
+                }
+            }
+            next.run(request).await
+        },
+    ))
+}
+
+#[tokio::test]
+async fn a_ven_follows_every_event_against_a_vtn_that_pages_small() {
+    // The VEN decides "was that the whole collection?" from the length of one page. That question
+    // only has an answer if the VEN named the page size: against a VTN that pages at twenty, a
+    // reader comparing against its own default of fifty concludes it has everything after twenty
+    // events and follows a truncated schedule — silently, with a `200` at both ends.
+    let vtn = Vtn::builder()
+        .storage(MemoryStorage::shared())
+        .authenticator(Arc::new(
+            StaticTokenAuth::new("http://unused/auth/token")
+                .with_business_logic(BL, ClientId::new("bl").unwrap())
+                .with_ven(VEN, ClientId::new("ven-client").unwrap()),
+        ))
+        .clock(Arc::new(FixedClock::new(now())))
+        .config(VtnConfig {
+            base_path: "/openadr3/3.1.0".into(),
+            ..Default::default()
+        })
+        .build();
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let router = vtn.router();
+    let served = pages_twenty_by_default(router.clone());
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, served).await;
+    });
+
+    let fixture = Fixture {
+        base: format!("http://{addr}/openadr3/3.1.0"),
+        router,
+    };
+
+    // Untargeted, so a VEN that names no targets may read them all.
+    let program = fixture.program("wide-programme").await;
+    const EVENTS: usize = 60;
+    for i in 0..EVENTS {
+        fixture.event(&program, &format!("event-{i}"), &[]).await;
+    }
+
+    let ven = fixture.ven(VenConfig::new("wide-ven".parse().unwrap()));
+    ven.sync().await.unwrap();
+    assert_eq!(
+        ven.events().len(),
+        EVENTS,
+        "the VEN stopped at the peer's page boundary and followed a truncated schedule"
+    );
+}
+
 #[tokio::test]
 async fn registering_twice_produces_one_ven_and_one_set_of_resources() {
     // A VEN restarts. Re-registering must find itself rather than create a second object or fail
@@ -324,6 +396,115 @@ impl Meter for CountingMeter {
                 .collect(),
         }])
     }
+}
+
+/// A meter with two resources, each reporting its own number.
+#[derive(Default)]
+struct TwoMeters;
+
+#[async_trait]
+impl Meter for TwoMeters {
+    async fn read(&self, due: &DueReport) -> Result<Vec<ReportResource>, VenError> {
+        let series = |name: &str, value: &str| ReportResource {
+            resource_name: ResourceName::new(name).unwrap(),
+            interval_period: None,
+            intervals: due
+                .interval_ids
+                .iter()
+                .map(|id| {
+                    Interval::new(
+                        *id,
+                        vec![ValuesMap::new(
+                            due.payload_type.clone(),
+                            vec![Value::Number(value.parse().unwrap())],
+                        )],
+                    )
+                })
+                .collect(),
+        };
+        Ok(vec![
+            series("connector-1", "1.5"),
+            series("connector-2", "0.25"),
+        ])
+    }
+}
+
+#[tokio::test]
+async fn a_descriptor_asking_to_aggregate_gets_one_summed_series() {
+    // `[UG §7.7]`: a descriptor with `aggregate: true` asks for a single resource entry named
+    // `AGGREGATED_REPORT`, and "aggregation means the data from a set of resources are summed".
+    // The meter here does neither — it reports per connector, as a meter does — so if the runtime
+    // does not sum and rename, the VTN receives two series under their own names and has no way to
+    // tell it did not get what it asked for.
+    let fixture = Fixture::start().await;
+    let program = fixture.program("aggregated").await;
+
+    fixture
+        .bl(
+            "POST",
+            "/events",
+            Some(json!({
+                "programID": program,
+                "eventName": "aggregate-me",
+                "intervalPeriod": { "start": "2026-02-11T07:00:00Z", "duration": "PT1H" },
+                "intervals": [
+                    { "id": 0, "payloads": [{ "type": "IMPORT_CAPACITY_LIMIT", "values": [60] }] }
+                ],
+                "reportDescriptors": [
+                    { "payloadType": "USAGE", "aggregate": true, "startInterval": 0,
+                      "numIntervals": 1, "frequency": 1, "repeat": 1,
+                      "readingType": "DIRECT_READ", "units": "KWH" }
+                ]
+            })),
+        )
+        .await;
+
+    let runtime = fixture.metered(
+        VenConfig::new("charger-7".parse().unwrap()),
+        TwoMeters,
+        "2026-02-11T09:00:00Z",
+    );
+    runtime.register().await.unwrap();
+    runtime.sync().await.unwrap();
+
+    let due = runtime.due_reports("2026-02-11T09:00:00Z".parse().unwrap());
+    assert_eq!(due.len(), 1, "{due:?}");
+    assert!(due[0].aggregate, "the descriptor asked for an aggregate");
+
+    assert_eq!(runtime.submit_due_reports().await.unwrap().len(), 1);
+
+    let reports = fixture.bl("GET", "/reports", None).await;
+
+    // `[UG §7.6]`: "reports contain payloadDescriptors", and the descriptor is what turns a series
+    // of bare numbers into a quantity. Everything it needs came from the `reportDescriptor` that
+    // asked for the report.
+    let descriptors = reports[0]["payloadDescriptors"].as_array().unwrap();
+    assert_eq!(
+        descriptors.len(),
+        1,
+        "{:?}",
+        reports[0]["payloadDescriptors"]
+    );
+    assert_eq!(descriptors[0]["objectType"], "REPORT_PAYLOAD_DESCRIPTOR");
+    assert_eq!(descriptors[0]["payloadType"], "USAGE");
+    // The unit and the reading type the VTN asked for come back with the numbers, rather than
+    // leaving a consumer to assume kilowatt-hours.
+    assert_eq!(descriptors[0]["units"], "KWH");
+    assert_eq!(descriptors[0]["readingType"], "DIRECT_READ");
+
+    let resources = reports[0]["resources"].as_array().unwrap();
+    assert_eq!(
+        resources.len(),
+        1,
+        "an aggregate report carries one series, and the VTN was sent {}",
+        resources.len()
+    );
+    assert_eq!(resources[0]["resourceName"], "AGGREGATED_REPORT");
+    assert_eq!(
+        resources[0]["intervals"][0]["payloads"][0]["values"][0],
+        json!(1.75),
+        "1.5 + 0.25 did not arrive as 1.75"
+    );
 }
 
 #[tokio::test]

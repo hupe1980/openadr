@@ -6,7 +6,7 @@
 
 use crate::std_shim::{String, ToString};
 use core::{fmt, str::FromStr};
-use serde::{Deserialize, Deserializer, Serialize, de::Unexpected};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Why a constrained string was rejected.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -29,6 +29,15 @@ pub enum IdentifierError {
         /// Type name, for the message.
         kind: &'static str,
     },
+    /// A comma, in a value that travels in a comma-separated query parameter.
+    #[error(
+        "{kind} must not contain a comma: it is carried in `?targets=` lists, where a comma \
+         separates one value from the next"
+    )]
+    Comma {
+        /// Type name, for the message.
+        kind: &'static str,
+    },
     /// A value that would be ambiguous on the wire or in a URL path.
     #[error("{kind} must not be {value:?}")]
     Reserved {
@@ -42,10 +51,24 @@ pub enum IdentifierError {
 /// Values that would be ambiguous in a path segment or in JSON.
 const RESERVED: &[&str] = &["null", "undefined", ".", ".."];
 
+/// The offending value, quoted, and short enough to read.
+///
+/// A refusal names what it refused — but the commonest refusal is "too long", and echoing a value
+/// back in full is a message whose least useful part is the largest. Sixty-four characters is more
+/// than every legal identifier here needs and less than any screen minds.
+fn abridged(value: &str) -> String {
+    const LIMIT: usize = 64;
+    match value.char_indices().nth(LIMIT) {
+        Some((at, _)) => crate::std_shim::format!("{:?}…", &value[..at]),
+        None => crate::std_shim::format!("{value:?}"),
+    }
+}
+
 macro_rules! constrained_string {
     (
         $(#[$meta:meta])*
         $name:ident, min = $min:expr, max = $max:expr, url_safe = $url_safe:expr
+        $(, list_safe = $list_safe:expr)?
     ) => {
         $(#[$meta])*
         #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
@@ -93,6 +116,13 @@ macro_rules! constrained_string {
                         kind: stringify!($name),
                     });
                 }
+                $(
+                    if $list_safe && value.contains(',') {
+                        return Err(IdentifierError::Comma {
+                            kind: stringify!($name),
+                        });
+                    }
+                )?
                 Ok(())
             }
 
@@ -142,11 +172,17 @@ macro_rules! constrained_string {
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
                 let s = String::deserialize(d)?;
+                // `custom` rather than `invalid_value`: serde renders the latter as
+                // "invalid value: string \"x\", expected <message>", and every message here is a
+                // sentence about what is wrong rather than a description of what was wanted — so
+                // the frame produced "expected Target must not contain a comma", which is the
+                // wrong grammar wrapped around the right explanation. The value is still named;
+                // it is named at the end, where it reads as evidence rather than as a subject.
                 Self::validate(&s).map_err(|e| {
-                    serde::de::Error::invalid_value(
-                        Unexpected::Str(&s),
-                        &e.to_string().as_str(),
-                    )
+                    serde::de::Error::custom(crate::std_shim::format!(
+                        "{e} (got {})",
+                        abridged(&s)
+                    ))
                 })?;
                 Ok(Self(s))
             }
@@ -174,7 +210,14 @@ constrained_string!(
     /// A targeting label (`target`).
     ///
     /// In OpenADR 3.1 targets are plain strings; 3.0's `{type, values}` pairs are gone.
-    Target, min = 1, max = 128, url_safe = false
+    ///
+    /// **Narrower than the schema by one character: no comma.** `openadr3.yaml` says only `string`,
+    /// 1..=128, but a target is the one identifier this API also carries in a *list* query
+    /// parameter, where `?targets=a,b` is a form the field uses. A comma would make one value on
+    /// the way in and two filter terms on the way out — in the field that decides object privacy —
+    /// so it is refused where the refusal can still name itself. See
+    /// <https://hupe1980.github.io/openadr/docs/spec-notes/>.
+    Target, min = 1, max = 128, url_safe = false, list_safe = true
 );
 
 constrained_string!(
@@ -247,6 +290,14 @@ mod tests {
         assert!(Target::new("871685900000000000").is_ok());
         assert!(Target::new("BATTERY-*").is_ok());
         assert!(Target::new("zone.a/feeder-3").is_ok());
+        // A comma would be one target here and two filter terms in `?targets=a,b`, which is the
+        // form the field uses. Refused where it can still be reported.
+        assert!(matches!(
+            Target::new("zone-a,north"),
+            Err(IdentifierError::Comma { .. })
+        ));
+        // The narrowing is Target's alone: every other name may carry one.
+        assert!(VenName::new("charge-point, bay 2").is_ok());
     }
 
     #[test]

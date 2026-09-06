@@ -662,6 +662,43 @@ fn transport(e: crate::client::ClientError) -> Outcome {
 ///
 /// Business logic writes the grant, because only business logic may. If no VEN object exists for
 /// the configured `clientID` this creates one, which is also what a VTN's enrollment flow does.
+/// Somebody else's VEN object, so an ownership check has something to *fail* to see.
+///
+/// A check that asserts "no foreign object appears" and never creates a foreign object asserts that
+/// an empty list is empty, which is the shape D-092 named and which running this suite against a
+/// VTN that reads every credential as business logic found in two more checks.
+async fn foreign_ven(run: &Runner) -> Result<String, Outcome> {
+    let response = attempt(
+        run.business_logic(),
+        "POST",
+        "vens",
+        &Query::new(),
+        Some(&json!({
+            "objectType": "BL_VEN_REQUEST",
+            // Unique per call: this VTN, and the specification's own model, allow one VEN object
+            // per `clientID`, so two checks each wanting "somebody else's VEN" need two
+            // somebody-elses.
+            "clientID": unique("another-client"),
+            "venName": unique("other-ven"),
+        })),
+        &[],
+    )
+    .await?;
+    if response.status.as_u16() != 201 {
+        return Err(Outcome::Failed(format!(
+            "could not create a second VEN object to test ownership against: {} {}",
+            response.status,
+            String::from_utf8_lossy(&response.body)
+        )));
+    }
+    let id = response
+        .json()
+        .and_then(|v| v["id"].as_str().map(str::to_string))
+        .ok_or_else(|| Outcome::Failed("the second VEN object has no id".into()))?;
+    run.track("vens", &id);
+    Ok(id)
+}
+
 async fn grant_target(run: &Runner, target: &str) -> Result<String, Outcome> {
     let client_id = run
         .target
@@ -1210,26 +1247,80 @@ async fn filters_are_additive(run: &Runner) -> Outcome {
 
 async fn targets_accept_both_forms(run: &Runner) -> Outcome {
     check!({
+        // Two events with different targets, so the two forms have something to *disagree* about.
+        // Comparing two unfiltered reads to each other compares an empty list with an empty list
+        // against a fresh VTN, which agrees with itself whatever the VTN does with `?targets=` —
+        // including ignoring it (D-092's shape).
+        let x = format!("{RUN_PREFIX}form-x");
+        let y = format!("{RUN_PREFIX}form-y");
+        let program = make_program(run, json!({ "programName": unique("program") })).await?;
+        let program_id = program["id"].as_str().unwrap_or_default().to_string();
+        let event_x = make_event(run, event_body(&program_id, &[&x])).await?;
+        let event_y = make_event(run, event_body(&program_id, &[&y])).await?;
+        let id_x = event_x["id"].as_str().unwrap_or_default().to_string();
+        let id_y = event_y["id"].as_str().unwrap_or_default().to_string();
+
+        let ids = |page: &Value| -> Vec<String> {
+            let mut out: Vec<String> = page
+                .as_array()
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(|i| i["id"].as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            out.sort();
+            out
+        };
+
         let repeated = fetch(
             run.business_logic(),
             "events",
-            &Query::new()
-                .param("targets", "oadr-conformance-x")
-                .param("targets", "oadr-conformance-y"),
+            &Query::new().param("targets", &x).param("targets", &y),
         )
         .await?;
         let comma = fetch(
             run.business_logic(),
             "events",
-            &Query::new().param("targets", "oadr-conformance-x,oadr-conformance-y"),
+            &Query::new().param("targets", format!("{x},{y}")),
         )
         .await?;
 
+        // Both forms find both events…
+        for (form, page) in [("a&targets=b", &repeated), ("a,b", &comma)] {
+            let found = ids(page);
+            expect(
+                found.contains(&id_x) && found.contains(&id_y),
+                format!("?targets={form} did not return both targeted events; it found {found:?}"),
+            )?;
+        }
+        // …and they find the same ones.
         expect(
-            repeated == comma,
-            "?targets=a&targets=b and ?targets=a,b returned different results; both forms occur \
-             in the field"
-                .to_string(),
+            ids(&repeated) == ids(&comma),
+            format!(
+                "?targets=a&targets=b and ?targets=a,b returned different results ({:?} against \
+                 {:?}); both forms occur in the field",
+                ids(&repeated),
+                ids(&comma)
+            ),
+        )?;
+
+        // And the filter is a filter. Without this the check passes against a VTN that ignores
+        // `?targets=` altogether, because both forms then agree on the whole collection.
+        let narrowed = fetch(
+            run.business_logic(),
+            "events",
+            &Query::new().param("targets", &x),
+        )
+        .await?;
+        let found = ids(&narrowed);
+        expect(
+            found.contains(&id_x) && !found.contains(&id_y),
+            format!(
+                "?targets={x} returned {found:?}; a filter that is accepted and ignored is worse \
+                 than one that is refused"
+            ),
         )
     })
 }
@@ -1607,6 +1698,49 @@ async fn ven_reads_only_its_own_vens(run: &Runner) -> Outcome {
 
 async fn ven_reads_only_its_own_subscriptions(run: &Runner) -> Outcome {
     check!({
+        // A subscription belonging to somebody else. Business logic's own will do: what the VEN
+        // must not see is any `clientID` but its own, and the body carries a `bearerToken`.
+        //
+        // A VTN with no webhook transport refuses to create one at all, and there the check has
+        // nothing to observe — which is a skip, not a pass.
+        let program = make_program(run, json!({ "programName": unique("program") })).await?;
+        let program_id = program["id"].as_str().unwrap_or_default().to_string();
+        let planted = attempt(
+            run.business_logic(),
+            "POST",
+            "subscriptions",
+            &Query::new(),
+            Some(&json!({
+                "clientName": unique("other-subscriber"),
+                "programID": program_id,
+                "objectOperations": [{
+                    "objects": ["EVENT"],
+                    "operations": ["CREATE"],
+                    "callbackUrl": "https://subscriber.invalid/hook",
+                    "bearerToken": "a-secret-nobody-else-may-read",
+                }],
+            })),
+            &[],
+        )
+        .await?;
+        match planted.status.as_u16() {
+            201 => {
+                if let Some(id) = planted
+                    .json()
+                    .and_then(|v| v["id"].as_str().map(str::to_string))
+                {
+                    run.track("subscriptions", &id);
+                }
+            }
+            _ => {
+                return Err(Outcome::Skipped(format!(
+                    "this VTN would not create a subscription ({}), so there is no foreign one to \
+                     be hidden from",
+                    planted.status
+                )));
+            }
+        }
+
         let listed = attempt(
             run.virtual_end_node(),
             "GET",
@@ -1994,6 +2128,36 @@ async fn report_needs_an_event(run: &Runner) -> Outcome {
 /// exactly the sort of endpoint an implementation adds without carrying the ownership rule across.
 async fn ven_reads_only_its_own_resources(run: &Runner) -> Outcome {
     check!({
+        // A resource under a VEN this client does not own. Without it the assertion below is
+        // "nothing foreign appeared" against a collection that holds nothing foreign.
+        let other_ven = foreign_ven(run).await?;
+        let planted = attempt(
+            run.business_logic(),
+            "POST",
+            "resources",
+            &Query::new(),
+            Some(&json!({
+                "objectType": "BL_RESOURCE_REQUEST",
+                "resourceName": unique("other-resource"),
+                "venID": other_ven,
+            })),
+            &[],
+        )
+        .await?;
+        if planted.status.as_u16() != 201 {
+            return Err(Outcome::Failed(format!(
+                "could not create a resource under another VEN to test against: {} {}",
+                planted.status,
+                String::from_utf8_lossy(&planted.body)
+            )));
+        }
+        if let Some(id) = planted
+            .json()
+            .and_then(|v| v["id"].as_str().map(str::to_string))
+        {
+            run.track("resources", &id);
+        }
+
         let listed = attempt(
             run.virtual_end_node(),
             "GET",
@@ -2235,31 +2399,8 @@ async fn mqtt_foreign_ven_topics_refused(run: &Runner) -> Outcome {
     check!({
         mqtt_binding(run).await?;
 
-        // Somebody else's VEN object.
-        let created = attempt(
-            run.business_logic(),
-            "POST",
-            "vens",
-            &Query::new(),
-            Some(&json!({
-                "objectType": "BL_VEN_REQUEST",
-                "clientID": format!("{RUN_PREFIX}another-client"),
-                "venName": unique("other-ven"),
-            })),
-            &[],
-        )
-        .await?;
-        if created.status.as_u16() != 201 {
-            return Err(Outcome::Failed(format!(
-                "could not create a second VEN object to test against: {}",
-                created.status
-            )));
-        }
-        let other_id = created
-            .json()
-            .and_then(|v| v["id"].as_str().map(str::to_string))
-            .ok_or_else(|| Outcome::Failed("the second VEN object has no id".into()))?;
-        run.track("vens", &other_id);
+        // Somebody else's VEN object, through the one helper that makes them.
+        let other_id = foreign_ven(run).await?;
 
         let response = attempt(
             run.virtual_end_node(),

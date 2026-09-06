@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use axum::{
     Router,
-    extract::{Query, State},
+    extract::{RawQuery, State},
     http::{HeaderMap, StatusCode},
     routing::post,
 };
@@ -108,16 +108,18 @@ async fn receive(State(state): State<Receiver>, headers: HeaderMap, body: String
     *state.status.lock().unwrap()
 }
 
-/// The echo challenge: return the `echo` parameter verbatim.
-async fn echo(
-    State(state): State<Receiver>,
-    Query(params): Query<std::collections::HashMap<String, String>>,
-) -> (StatusCode, String) {
-    let challenge = params.get("echo").cloned().unwrap_or_default();
-    if *state.echo_correctly.lock().unwrap() {
-        (StatusCode::OK, challenge)
-    } else {
-        (StatusCode::OK, "wrong".into())
+/// The echo challenge, answered the way a subscriber is meant to answer it.
+///
+/// Through `openadr::webhook::echo_challenge` rather than by hand, so that the crate's own
+/// receiver-side helper is the thing this end-to-end test exercises. It is the only half of the
+/// webhook contract a subscriber cannot skip — a subscription is not created until it passes — and
+/// a helper for it that nothing calls is a helper nobody has checked against a real challenge.
+async fn echo(State(state): State<Receiver>, RawQuery(query): RawQuery) -> (StatusCode, String) {
+    let challenge = openadr::webhook::echo_challenge(query.as_deref().unwrap_or_default());
+    match (challenge, *state.echo_correctly.lock().unwrap()) {
+        (Some(challenge), true) => (StatusCode::OK, challenge),
+        (Some(_), false) => (StatusCode::OK, "wrong".into()),
+        (None, _) => (StatusCode::NOT_FOUND, String::new()),
     }
 }
 
@@ -359,6 +361,9 @@ impl Harness {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+// `[Def §Subscriptions]`: "A VTN SHALL make a request to the callback URL when the conditions are
+// met." Over a real socket, through the outbox, because a fan-out that computes the right recipients
+// and posts to none of them looks identical from inside.
 async fn a_notification_reaches_the_subscriber() {
     let receiver = Receiver::new();
     let callback = receiver.start().await;
@@ -438,6 +443,10 @@ async fn the_payload_is_signed_and_a_receiver_can_verify_it() {
 }
 
 #[tokio::test]
+// `[Def §program and event objects - targeting]`, the notification half: "When evaluating whether
+// to send a notification of a change of state of an object with targets, the VTN SHALL use the
+// clientID of …" — which is why a subscription stores what its owner *was* and not only who it was
+// (D-095).
 async fn a_subscriber_outside_the_target_group_is_not_told() {
     let receiver = Receiver::new();
     let callback = receiver.start().await;
@@ -680,6 +689,8 @@ async fn a_subscription_is_refused_unless_its_endpoint_answers_the_challenge() {
 }
 
 #[tokio::test]
+// `[Def §Webhooks]`: the VTN MUST verify the callback URL belongs to the requestor with a `GET`
+// carrying an `echo` parameter, and MUST NOT create the subscription when the check fails.
 async fn the_echo_challenge_proves_control_of_the_endpoint() {
     let receiver = Receiver::new();
     let callback = receiver.start().await;

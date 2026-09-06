@@ -22,7 +22,7 @@ pub use interval::{
     ExpandError, ExpandedInterval, IntervalExpander, IntervalSequence, active_window,
 };
 pub use privacy::{Access, Grant, GrantIndex, OwnerFilter, Role, TargetFilter};
-pub use report::{ReportDue, ReportSchedule, ScheduleOptions};
+pub use report::{AggregateError, ReportDue, ReportSchedule, ScheduleOptions, aggregate};
 pub use timeline::{Segment, Timeline};
 
 /// A source of the current time.

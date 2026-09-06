@@ -16,6 +16,31 @@
 //! server to check a signature. It is `no_std` + alloc, takes its time as an argument rather than
 //! reading a clock, and allocates one string.
 //!
+//! ## The other half a receiver owes
+//!
+//! Before a VTN will deliver anything at all, it proves the subscriber controls the callback URL:
+//! `POST /subscriptions` triggers a `GET` at that URL carrying an `echo` query parameter, and the
+//! endpoint must answer `200` with that value as its body `[Def §Webhooks]`. Get it wrong and the
+//! subscription is not created — so it is the *first* thing a receiver meets, before any signature
+//! and before any notification. [`echo_challenge`] is that half, on the same terms as the rest of
+//! this module: no HTTP stack, no VTN, `no_std`.
+//!
+//! ```
+//! use openadr::webhook;
+//!
+//! // In the handler for your callback URL.
+//! fn on_get(query: &str) -> (u16, String) {
+//!     match webhook::echo_challenge(query) {
+//!         // The VTN is asking whether this endpoint is really yours. Answer it verbatim.
+//!         Some(challenge) => (200, challenge),
+//!         None => (404, String::new()),
+//!     }
+//! }
+//!
+//! assert_eq!(on_get("echo=6f1c9a").0, 200);
+//! assert_eq!(on_get("echo=6f1c9a").1, "6f1c9a");
+//! ```
+//!
 //! ```
 //! use openadr::model::Timestamp;
 //! use openadr::webhook::{self, Signature, SignatureError};
@@ -48,6 +73,9 @@ pub const SIGNATURE_HEADER: &str = "x-openadr-signature";
 pub const TIMESTAMP_HEADER: &str = "x-openadr-timestamp";
 /// Header carrying the delivery attempt number, so a receiver can recognise a retry.
 pub const ATTEMPT_HEADER: &str = "x-openadr-attempt";
+
+/// Query parameter carrying the VTN's proof-of-control challenge `[Def §Webhooks]`.
+pub const ECHO_PARAM: &str = "echo";
 
 /// The only scheme version defined, and the prefix of every signature.
 pub const VERSION: &str = "v1";
@@ -194,9 +222,104 @@ pub fn parse_timestamp(header: &str) -> Option<Timestamp> {
     Timestamp::from_second(header.trim().parse().ok()?).ok()
 }
 
+/// The challenge value from a callback `GET`, if this request is one.
+///
+/// `query` is the raw query string — everything after the `?`, without it. Returns the value the
+/// endpoint must send back as the body of a `200`; `None` means the request carries no challenge
+/// and is not the VTN asking who owns this URL.
+///
+/// The value is percent-decoded: `[Def §Webhooks]` says only "random generated string value", so a
+/// receiver that echoed the *encoded* form back would work against this VTN and fail against one
+/// whose alphabet is wider.
+///
+/// The VTN compares exact bytes, so answer with exactly what this returns — no wrapping object, no
+/// trailing content.
+pub fn echo_challenge(query: &str) -> Option<String> {
+    query
+        .split('&')
+        .filter_map(|pair| pair.split_once('='))
+        .find(|(key, _)| *key == ECHO_PARAM)
+        .map(|(_, value)| percent_decode(value))
+}
+
+/// Decode `+` as a space and `%XX` as a byte, leaving anything malformed as it stands.
+///
+/// Deliberately lenient about a stray `%`: this decodes a value a *server* is about to echo back,
+/// and refusing the whole request over one byte would turn a peer's encoding quirk into a
+/// subscription that cannot be created.
+fn percent_decode(value: &str) -> String {
+    let bytes = value.as_bytes();
+    let mut out: crate::std_shim::Vec<u8> = crate::std_shim::Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => match (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                (Some(hi), Some(lo)) => {
+                    out.push(hi << 4 | lo);
+                    i += 3;
+                }
+                _ => {
+                    out.push(b'%');
+                    i += 1;
+                }
+            },
+            byte => {
+                out.push(byte);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8(out).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned())
+}
+
+fn hex(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_echo_challenge_is_read_wherever_it_sits_in_the_query() {
+        assert_eq!(echo_challenge("echo=abc123").as_deref(), Some("abc123"));
+        assert_eq!(
+            echo_challenge("tenant=north&echo=abc123").as_deref(),
+            Some("abc123")
+        );
+        assert_eq!(
+            echo_challenge("echo=abc123&tenant=north").as_deref(),
+            Some("abc123")
+        );
+        // A notification `POST` carries no challenge, and answering one would be answering the
+        // wrong question.
+        assert_eq!(echo_challenge(""), None);
+        assert_eq!(echo_challenge("tenant=north"), None);
+        // `echoes=` is not `echo=`.
+        assert_eq!(echo_challenge("echoes=abc123"), None);
+    }
+
+    #[test]
+    fn a_challenge_is_decoded_rather_than_echoed_back_encoded() {
+        // The Definitions say "random generated string value", not "hex". A receiver that echoed
+        // the encoded form would pass against a VTN whose alphabet happens to need no encoding and
+        // fail against one whose does — which is the worst shape a bug can have.
+        assert_eq!(echo_challenge("echo=a%2Fb").as_deref(), Some("a/b"));
+        assert_eq!(echo_challenge("echo=a+b").as_deref(), Some("a b"));
+        assert_eq!(echo_challenge("echo=%E2%9C%93").as_deref(), Some("✓"));
+        // A stray `%` is left alone rather than failing the whole request.
+        assert_eq!(echo_challenge("echo=100%").as_deref(), Some("100%"));
+        assert_eq!(echo_challenge("echo=a%zz").as_deref(), Some("a%zz"));
+    }
 
     fn ts(s: &str) -> Timestamp {
         s.parse().unwrap()
