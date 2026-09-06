@@ -1,0 +1,65 @@
+# Zola configuration for the openadr documentation site.
+#
+# Built and deployed by .github/workflows/site.yml. `zola build` writes to site/public/,
+# which is gitignored — nothing generated is committed.
+
+base_url = "https://hupe1980.github.io/openadr"
+title = "openadr"
+# Kept under ~155 characters: a search result truncates the rest, and the tail is where the
+# distinguishing words are if it is written the other way round.
+description = "OpenADR 3.1 in Rust: a VTN server, a VEN runtime and a typed client in one crate, with object privacy, a durable notification outbox and decimal prices."
+default_language = "en"
+
+compile_sass = true
+minify_html = true
+generate_sitemap = true
+generate_robots_txt = true
+
+# Zola's built-in index, queried by a handful of lines of JavaScript. No search service, no
+# third-party request, and it degrades to "use your browser's find" when JavaScript is off.
+build_search_index = true
+
+[search]
+index_format = "elasticlunr_json"
+
+[markdown]
+smart_punctuation = false
+external_links_target_blank = true
+external_links_no_referrer = true
+# A small "#" after each heading, rather than turning the heading itself into a link.
+insert_anchor_links = "right"
+
+# Code blocks stay dark in both colour schemes — the stylesheet paints them that way — so one
+# theme is enough and it is inlined rather than shipped as a second stylesheet.
+[markdown.highlighting]
+theme = "ayu-dark"
+
+[extra]
+repository = "https://github.com/hupe1980/openadr"
+crate = "https://crates.io/crates/openadr"
+api_docs = "https://docs.rs/openadr"
+spec = "https://www.openadr.org/specification"
+# Rendered into <meta property="og:image">. Generated once and committed; see static/og.svg.
+# The dimensions are declared so a crawler can lay the card out before the image arrives.
+og_image = "og.png"
+og_image_width = "1200"
+og_image_height = "630"
+og_image_alt = "openadr — OpenADR 3.1 in Rust"
+# Painted by the browser around the page on mobile, in each colour scheme.
+theme_color_light = "#ffffff"
+theme_color_dark = "#0d1117"
+
+# The top-level navigation, in order. Section pages carry their own ordering.
+[[extra.nav]]
+name = "Documentation"
+url = "/docs/"
+
+[[extra.nav]]
+name = "API reference"
+url = "https://docs.rs/openadr"
+external = true
+
+[[extra.nav]]
+name = "GitHub"
+url = "https://github.com/hupe1980/openadr"
+external = true

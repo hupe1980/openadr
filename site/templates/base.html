@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="{{ config.default_language }}" prefix="og: https://ogp.me/ns#">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="{{ config.extra.theme_color_light }}" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="{{ config.extra.theme_color_dark }}" media="(prefers-color-scheme: dark)">
+
+{#- One place decides the title, description, canonical URL and page kind, because a page that
+    gets them from four places gets one of them wrong.
+
+    The suffix carries the keywords, because several page titles legitimately do not: "Running a
+    VTN" and "The VEN runtime" are the right headings for a reader who is already here, and say
+    nothing to a search engine about which protocol they are about. -#}
+{%- set suffix = "OpenADR 3.1 in Rust" -%}
+{%- if page is defined -%}
+  {%- set page_title = page.title -%}
+  {%- set page_desc = page.description | default(value=config.description) -%}
+  {%- set canonical = page.permalink -%}
+  {%- set og_type = "article" -%}
+{%- elif section is defined and section.title -%}
+  {%- set page_title = section.title -%}
+  {%- set page_desc = section.description | default(value=config.description) -%}
+  {%- set canonical = section.permalink -%}
+  {%- set og_type = "website" -%}
+{%- else -%}
+  {%- set page_title = false -%}
+  {%- set page_desc = config.description -%}
+  {%- set canonical = config.base_url -%}
+  {%- set og_type = "website" -%}
+{%- endif -%}
+{#- Kept under about sixty characters, which is where a search result stops rendering one. -#}
+{%- if page_title -%}
+  {%- set full_title = page_title ~ " · " ~ suffix -%}
+{%- else -%}
+  {%- set full_title = suffix ~ " — VTN server, VEN runtime and client" -%}
+{%- endif -%}
+
+<title>{{ full_title }}</title>
+<meta name="description" content="{{ page_desc }}">
+<link rel="canonical" href="{{ canonical | safe }}">
+
+<meta property="og:type" content="{{ og_type }}">
+<meta property="og:site_name" content="{{ config.title }}">
+<meta property="og:title" content="{{ full_title }}">
+<meta property="og:description" content="{{ page_desc }}">
+<meta property="og:url" content="{{ canonical | safe }}">
+<meta property="og:image" content="{{ get_url(path=config.extra.og_image) | safe }}">
+<meta property="og:image:width" content="{{ config.extra.og_image_width }}">
+<meta property="og:image:height" content="{{ config.extra.og_image_height }}">
+<meta property="og:image:alt" content="{{ config.extra.og_image_alt }}">
+<meta property="og:locale" content="{{ config.default_language }}">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ full_title }}">
+<meta name="twitter:description" content="{{ page_desc }}">
+<meta name="twitter:image" content="{{ get_url(path=config.extra.og_image) | safe }}">
+<meta name="twitter:image:alt" content="{{ config.extra.og_image_alt }}">
+
+<link rel="icon" href="{{ get_url(path='favicon.svg') | safe }}" type="image/svg+xml">
+<link rel="alternate icon" href="{{ get_url(path='favicon.ico') | safe }}">
+<link rel="preload" as="style" href="{{ get_url(path='style.css') | safe }}">
+<link rel="stylesheet" href="{{ get_url(path='style.css') | safe }}">
+<link rel="sitemap" type="application/xml" href="{{ get_url(path='sitemap.xml') | safe }}">
+
+{#- Each template fills this with the one entity its page actually is: the landing page is the
+    software, a documentation page is an article, the index is a collection. Emitting a default
+    here as well put "this page is source code" on every page of prose. -#}
+{%- block structured_data %}{% endblock structured_data %}
+</head>
+
+<body>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="site-header">
+  <nav aria-label="Primary">
+    <a class="brand" href="{{ get_url(path='@/_index.md') | safe }}">
+      <span class="mark" aria-hidden="true"></span>openadr
+    </a>
+    {#- Search lives in the header, not the sidebar. On a narrow screen the sidebar reflows to
+        *below* the article, so a reader on a phone had to scroll past the whole page to reach it —
+        and the landing page has no sidebar at all, so there was nowhere to search from at all. -#}
+    <form class="search" role="search" onsubmit="return false">
+      <label class="visually-hidden" for="q">Search the documentation</label>
+      <input id="q" type="search" placeholder="Search…" autocomplete="off" spellcheck="false"
+             role="combobox" aria-expanded="false" aria-controls="results" aria-autocomplete="list">
+      <kbd aria-hidden="true">/</kbd>
+      <ul id="results" class="results" role="listbox" aria-label="Search results" hidden></ul>
+    </form>
+
+    <ul class="nav-links">
+      {%- for item in config.extra.nav %}
+      <li><a href="{% if item.external %}{{ item.url }}{% else %}{{ get_url(path=item.url) | safe }}{% endif %}"
+             {% if item.external %}rel="noopener"{% endif %}>{{ item.name }}</a></li>
+      {%- endfor %}
+    </ul>
+  </nav>
+</header>
+
+<main id="main">
+{% block content %}{% endblock content %}
+</main>
+
+<footer class="site-footer">
+  <div class="wrap">
+    <p>
+      <strong>openadr</strong> — an independent implementation of
+      <a href="{{ config.extra.spec }}" rel="noopener">OpenADR 3.1</a>, a specification published by
+      the OpenADR Alliance. Not affiliated with or endorsed by the Alliance.
+    </p>
+    <p class="muted">
+      Apache-2.0 OR MIT ·
+      <a href="{{ config.extra.repository }}" rel="noopener">Source</a> ·
+      <a href="{{ config.extra.crate }}" rel="noopener">crates.io</a> ·
+      <a href="{{ config.extra.api_docs }}" rel="noopener">API reference</a>
+    </p>
+  </div>
+</footer>
+
+<script src="{{ get_url(path='search.js') | safe }}" defer></script>
+</body>
+</html>

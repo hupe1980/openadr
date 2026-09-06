@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+
+{% block structured_data %}
+{{ super() }}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": {{ page.title | json_encode | safe }},
+  "description": {{ page.description | default(value=config.description) | json_encode | safe }},
+  "url": {{ page.permalink | json_encode | safe }},
+  "isPartOf": {
+    "@type": "WebSite",
+    "name": "openadr",
+    "url": {{ config.base_url | json_encode | safe }}
+  },
+  "inLanguage": "en",
+  "license": "https://spdx.org/licenses/Apache-2.0.html"
+}
+</script>
+{#- The same trail the reader sees below, in the form a crawler reads. Written out rather than
+    looped, because it is exactly two levels deep and a loop would imply otherwise. -#}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "BreadcrumbList",
+  "itemListElement": [
+    { "@type": "ListItem", "position": 1, "name": "Documentation",
+      "item": {{ get_url(path='@/docs/_index.md') | json_encode | safe }} },
+    { "@type": "ListItem", "position": 2, "name": {{ page.title | json_encode | safe }},
+      "item": {{ page.permalink | json_encode | safe }} }
+  ]
+}
+</script>
+{% endblock structured_data %}
+
+{% block content %}
+<div class="wrap docs">
+  {% include "_sidebar.html" %}
+
+  <article class="prose">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      <a href="{{ get_url(path='@/docs/_index.md') | safe }}">Documentation</a>
+      <span aria-hidden="true">/</span>
+      <span aria-current="page">{{ page.title }}</span>
+    </nav>
+
+    <h1>{{ page.title }}</h1>
+    {%- if page.description %}<p class="lede">{{ page.description }}</p>{% endif %}
+
+    {%- if page.toc | length > 1 %}
+    <details class="onthispage" open>
+      <summary>On this page</summary>
+      <ul>
+        {%- for h in page.toc %}
+        <li><a href="{{ h.permalink | safe }}">{{ h.title }}</a></li>
+        {%- endfor %}
+      </ul>
+    </details>
+    {%- endif %}
+
+    {{ page.content | safe }}
+
+    <nav class="pager" aria-label="Pagination">
+      {%- if page.lower %}<a class="prev" href="{{ page.lower.permalink | safe }}">← {{ page.lower.title }}</a>{% endif %}
+      {%- if page.higher %}<a class="next" href="{{ page.higher.permalink | safe }}">{{ page.higher.title }} →</a>{% endif %}
+    </nav>
+  </article>
+</div>
+{% endblock content %}

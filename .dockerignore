@@ -1,0 +1,6 @@
+# The build context is copied into the image builder, and `target/` is gigabytes of host-architecture
+# artefacts the container cannot use anyway.
+target
+.git
+site/public
+specs

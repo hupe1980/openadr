@@ -1,0 +1,674 @@
+// openadr documentation site.
+//
+// One stylesheet, no framework, no web fonts. The page is text and a handful of code blocks, and
+// a demand-response operator reading it on a substation laptop should not wait for a CDN.
+
+// ---------------------------------------------------------------------------
+// Tokens
+// ---------------------------------------------------------------------------
+
+:root {
+  --bg: #fbfbfa;
+  --bg-raised: #ffffff;
+  --bg-sunken: #f2f2ef;
+  --fg: #16181d;
+  --fg-muted: #5b6170;
+  --fg-faint: #868d9c;
+  --line: #e2e2dd;
+  --line-strong: #cfcfc8;
+  --accent: #0f6f5c;
+  --accent-fg: #ffffff;
+  --accent-soft: #e6f2ee;
+  --code-bg: #16181d;
+  --code-fg: #e6e6e3;
+  --yes: #0f6f5c;
+  --part: #a5620a;
+  --no: #7c7f89;
+
+  --measure: 68ch;
+  --radius: 8px;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #101216;
+    --bg-raised: #171a20;
+    --bg-sunken: #0b0d10;
+    --fg: #e7e9ee;
+    --fg-muted: #a2a9b8;
+    --fg-faint: #7b8293;
+    --line: #262a33;
+    --line-strong: #363b47;
+    --accent: #4fd1b0;
+    --accent-fg: #08221c;
+    --accent-soft: #10312a;
+    --code-bg: #0b0d10;
+    --code-fg: #e7e9ee;
+    --yes: #4fd1b0;
+    --part: #e0a355;
+    --no: #7b8293;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html {
+  scroll-behavior: smooth;
+  // Anchored headings should not land under the sticky header.
+  scroll-padding-top: 5rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font: 16px/1.65 var(--sans);
+  -webkit-text-size-adjust: 100%;
+  text-rendering: optimizeLegibility;
+}
+
+.wrap {
+  width: min(100% - 2.5rem, 74rem);
+  margin-inline: auto;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.skip {
+  position: absolute;
+  left: -9999px;
+  &:focus {
+    left: 1rem; top: 1rem;
+    z-index: 20;
+    padding: .6rem 1rem;
+    background: var(--accent);
+    color: var(--accent-fg);
+    border-radius: var(--radius);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Header and footer
+// ---------------------------------------------------------------------------
+
+.site-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(8px);
+  border-bottom: 1px solid var(--line);
+
+  nav {
+    width: min(100% - 2.5rem, 74rem);
+    margin-inline: auto;
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+    height: 3.5rem;
+  }
+
+  .nav-links {
+    display: flex;
+    gap: 1.25rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: .925rem;
+    white-space: nowrap;
+    // Narrow screens scroll the nav rather than wrapping it into two ragged lines.
+    overflow-x: auto;
+    scrollbar-width: none;
+    &::-webkit-scrollbar { display: none; }
+  }
+
+  @media (max-width: 30rem) {
+    nav { gap: .9rem; }
+    .nav-links { gap: .9rem; font-size: .875rem; }
+  }
+
+  a {
+    color: var(--fg-muted);
+    text-decoration: none;
+    &:hover, &:focus-visible { color: var(--fg); }
+  }
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: .55rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--fg) !important;
+  font-size: 1.05rem;
+
+  .mark {
+    width: .85rem;
+    height: .85rem;
+    border-radius: 3px;
+    background: var(--accent);
+    // A square with a notch: an interval with a gap in it.
+    clip-path: polygon(0 0, 100% 0, 100% 45%, 55% 45%, 55% 100%, 0 100%);
+  }
+}
+
+.site-footer {
+  margin-top: 5rem;
+  padding: 2.5rem 0 3.5rem;
+  border-top: 1px solid var(--line);
+  font-size: .9rem;
+  color: var(--fg-muted);
+
+  p { margin: 0 0 .6rem; max-width: var(--measure); }
+  a { color: inherit; }
+}
+
+// ---------------------------------------------------------------------------
+// Hero
+// ---------------------------------------------------------------------------
+
+.hero {
+  padding: 4.5rem 0 3rem;
+  border-bottom: 1px solid var(--line);
+  background:
+    radial-gradient(60rem 22rem at 12% -8rem, var(--accent-soft), transparent 70%);
+
+  h1 {
+    margin: .35rem 0 1rem;
+    font-size: clamp(2rem, 5.2vw, 3.15rem);
+    line-height: 1.1;
+    letter-spacing: -0.025em;
+    max-width: 20ch;
+  }
+}
+
+.eyebrow {
+  margin: 0;
+  font: 600 .8rem/1 var(--mono);
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.lede {
+  font-size: 1.15rem;
+  color: var(--fg-muted);
+  max-width: var(--measure);
+  margin: 0 0 1.75rem;
+}
+
+.cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: .75rem;
+  margin: 0 0 2rem;
+}
+
+.button {
+  display: inline-block;
+  padding: .7rem 1.25rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  color: var(--fg);
+  font-weight: 550;
+  text-decoration: none;
+
+  &:hover, &:focus-visible { border-color: var(--accent); }
+
+  &.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-fg);
+  }
+}
+
+.install code {
+  display: block;
+  overflow-x: auto;
+  padding: .8rem 1rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  font: .9rem/1.5 var(--mono);
+  color: var(--fg-muted);
+  max-width: max-content;
+}
+
+// ---------------------------------------------------------------------------
+// Sections and cards
+// ---------------------------------------------------------------------------
+
+section.wrap { padding: 3rem 0 0; }
+
+h2 {
+  font-size: 1.6rem;
+  letter-spacing: -0.015em;
+  margin: 0 0 1.25rem;
+}
+
+h3 { font-size: 1.075rem; margin: 0 0 .5rem; }
+
+.cards {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: repeat(auto-fit, minmax(19rem, 1fr));
+}
+
+.card {
+  padding: 1.4rem 1.5rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+
+  p { margin: 0 0 .75rem; color: var(--fg-muted); font-size: .95rem; }
+  p:last-child { margin-bottom: 0; }
+}
+
+.note {
+  font-size: .9rem !important;
+  color: var(--fg-faint) !important;
+  border-left: 2px solid var(--line-strong);
+  padding-left: .85rem;
+}
+
+.more {
+  font-weight: 550;
+  text-decoration: none;
+  color: var(--accent);
+  &:hover { text-decoration: underline; }
+}
+
+.closing { padding-bottom: 1rem; }
+
+.next {
+  list-style: none;
+  padding: 0;
+  max-width: var(--measure);
+
+  li {
+    padding: .75rem 0;
+    border-top: 1px solid var(--line);
+    color: var(--fg-muted);
+  }
+  a { color: var(--fg); }
+}
+
+// ---------------------------------------------------------------------------
+// Prose
+// ---------------------------------------------------------------------------
+
+.prose {
+  max-width: var(--measure);
+
+  // A landing-page section is both `.wrap` and `.prose`: it should keep the page's own gutters
+  // and constrain the *text* inside it, not shrink and centre itself.
+  &.wrap {
+    max-width: none;
+    > * { max-width: var(--measure); }
+    // Prose wants a narrow measure; a table or a code block wants its own width.
+    > table, > pre { max-width: min(100%, 58rem); }
+  }
+
+  h1 {
+    font-size: clamp(1.75rem, 4vw, 2.35rem);
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+    margin: 0 0 .75rem;
+  }
+
+  h2 {
+    margin: 2.75rem 0 1rem;
+    padding-top: .5rem;
+    border-top: 1px solid var(--line);
+    font-size: 1.4rem;
+  }
+
+  h3 { margin: 2rem 0 .6rem; font-size: 1.1rem; }
+
+  p, ul, ol { margin: 0 0 1.1rem; }
+  li { margin-bottom: .35rem; }
+
+  a { color: var(--accent); text-underline-offset: 2px; }
+
+  strong { font-weight: 640; }
+
+  blockquote {
+    margin: 1.25rem 0;
+    padding: .1rem 0 .1rem 1.1rem;
+    border-left: 3px solid var(--accent);
+    color: var(--fg-muted);
+  }
+
+  hr { border: 0; border-top: 1px solid var(--line); margin: 2.5rem 0; }
+}
+
+// Heading anchors, revealed on hover so they do not clutter the page.
+.prose {
+  h2, h3, h4 { position: relative; }
+
+  a.anchor {
+    margin-left: .4rem;
+    opacity: 0;
+    text-decoration: none;
+    font-weight: 400;
+    color: var(--fg-faint);
+    &:focus { opacity: 1; }
+  }
+
+  h2:hover a.anchor,
+  h3:hover a.anchor,
+  h4:hover a.anchor { opacity: 1; }
+}
+
+// ---------------------------------------------------------------------------
+// Code
+// ---------------------------------------------------------------------------
+
+code {
+  font-family: var(--mono);
+  font-size: .89em;
+}
+
+:not(pre) > code {
+  padding: .12em .38em;
+  border-radius: 4px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+
+// The syntax theme paints the block's own foreground and background inline; everything here is
+// the frame around it.
+pre {
+  overflow-x: auto;
+  margin: 0 0 1.25rem;
+  padding: 1rem 1.15rem;
+  border-radius: var(--radius);
+  background: var(--code-bg);
+  color: var(--code-fg);
+  font-size: .875rem;
+  line-height: 1.6;
+  border: 1px solid var(--line);
+
+  code {
+    background: none;
+    border: 0;
+    padding: 0;
+    white-space: pre;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Tables
+// ---------------------------------------------------------------------------
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 1.5rem;
+  font-size: .93rem;
+  display: block;
+  overflow-x: auto;
+}
+
+th, td {
+  text-align: left;
+  padding: .6rem .8rem;
+  border-bottom: 1px solid var(--line);
+  vertical-align: top;
+}
+
+th {
+  font-weight: 620;
+  color: var(--fg-muted);
+  border-bottom-color: var(--line-strong);
+  white-space: nowrap;
+}
+
+.status {
+  td.yes { color: var(--yes); font-weight: 600; white-space: nowrap; }
+  td.part { color: var(--part); font-weight: 600; white-space: nowrap; }
+  td.no { color: var(--no); white-space: nowrap; }
+}
+
+// ---------------------------------------------------------------------------
+// Docs layout
+// ---------------------------------------------------------------------------
+
+.docs {
+  display: grid;
+  gap: 3rem;
+  grid-template-columns: 15rem minmax(0, 1fr);
+  align-items: start;
+  padding: 2.5rem 0 0;
+
+  // A grid item defaults to `min-width: auto`, so one wide code block widens its track and the
+  // whole page scrolls sideways. The `overflow-x: auto` on `pre` only works once this is set.
+  > * { min-width: 0; }
+}
+
+// Below the breakpoint the sidebar moves *after* the article. A reader who followed a link wants
+// the page, not a table of contents they have to scroll past to reach it; the page's own "on this
+// page" list is already at the top.
+@media (max-width: 60rem) {
+  .docs {
+    grid-template-columns: 1fr;
+    gap: 2.5rem;
+  }
+  .docs > .prose { order: 1; }
+  .sidebar {
+    order: 2;
+    position: static;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--line);
+  }
+}
+
+.sidebar {
+  position: sticky;
+  top: 4.5rem;
+  font-size: .925rem;
+
+  ol, ul {
+    list-style: none;
+    margin: 0 0 1.5rem;
+    padding: 0;
+  }
+
+  li { margin: 0; }
+
+  a {
+    display: block;
+    padding: .3rem .6rem;
+    // Pulled out on both sides, so the highlight bleeds into the gutter symmetrically rather
+    // than overflowing the container by its own padding.
+    margin-inline: -.6rem;
+    border-radius: 5px;
+    color: var(--fg-muted);
+    text-decoration: none;
+    &:hover { background: var(--bg-sunken); color: var(--fg); }
+  }
+
+  .current > a {
+    color: var(--fg);
+    font-weight: 600;
+    background: var(--accent-soft);
+  }
+}
+
+.sidebar-title {
+  margin: 0 0 .5rem;
+  font: 600 .78rem/1 var(--mono);
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+
+  a { color: inherit; padding: 0; margin: 0; display: inline; }
+}
+
+// Search sits in the header on every page and every width. The results are a floating listbox
+// rather than a block in the flow, because the header is sticky and the list would otherwise push
+// the article down as the reader types.
+.search {
+  position: relative;
+  flex: 1 1 auto;
+  max-width: 22rem;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+
+  input {
+    width: 100%;
+    padding: .38rem 2rem .38rem .7rem;
+    border: 1px solid var(--line-strong);
+    border-radius: var(--radius);
+    background: var(--bg-raised);
+    color: var(--fg);
+    font: inherit;
+    font-size: .875rem;
+    // Safari draws its own clear button and magnifier; neither matches the rest of the page.
+    &::-webkit-search-decoration,
+    &::-webkit-search-cancel-button { appearance: none; }
+    &:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  }
+
+  // The keyboard hint, which is a lie on a touch screen — so it is hidden where there is no
+  // keyboard to press, and it never receives a pointer event anywhere.
+  kbd {
+    position: absolute;
+    right: .5rem;
+    padding: .05rem .3rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    background: var(--bg-sunken);
+    color: var(--fg-faint);
+    font-family: var(--mono);
+    font-size: .7rem;
+    line-height: 1.4;
+    pointer-events: none;
+  }
+  @media (hover: none) {
+    kbd { display: none; }
+  }
+}
+
+.results {
+  position: absolute;
+  top: calc(100% + .4rem);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: min(60vh, 24rem);
+  overflow-y: auto;
+  list-style: none;
+  margin: 0;
+  padding: .25rem;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  box-shadow: 0 8px 24px rgb(0 0 0 / .12);
+  font-size: .9rem;
+
+  a {
+    display: block;
+    padding: .4rem .55rem;
+    border-radius: 5px;
+    color: var(--fg);
+    text-decoration: none;
+  }
+  li[aria-selected="true"] a,
+  a:hover,
+  a:focus-visible { background: var(--accent-soft); color: var(--fg); }
+  .hint {
+    display: block;
+    padding: .4rem .55rem;
+    color: var(--fg-faint);
+  }
+  &[hidden] { display: none; }
+}
+
+// Under about 34rem the header cannot hold a brand, an input and three links. The links win the
+// row and search takes the one below it, still above the article rather than below it.
+@media (max-width: 34rem) {
+  .site-header nav {
+    flex-wrap: wrap;
+    height: auto;
+    padding-block: .5rem;
+    row-gap: .5rem;
+  }
+  .search {
+    order: 3;
+    flex-basis: 100%;
+    max-width: none;
+    margin-left: 0;
+  }
+  .site-header .nav-links { margin-left: auto; }
+}
+
+.breadcrumb {
+  font-size: .875rem;
+  color: var(--fg-faint);
+  margin-bottom: .75rem;
+
+  a { color: var(--fg-muted); text-decoration: none; }
+  span { margin: 0 .35rem; }
+}
+
+.onthispage {
+  margin: 0 0 2rem;
+  padding: .85rem 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  font-size: .92rem;
+
+  summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--fg-muted);
+  }
+
+  ul { list-style: none; margin: .75rem 0 0; padding: 0; }
+  li { margin-bottom: .3rem; }
+  a { color: var(--fg-muted); text-decoration: none; &:hover { color: var(--accent); } }
+}
+
+.toc {
+  list-style: none;
+  padding: 0;
+
+  li {
+    padding: .7rem 0;
+    border-bottom: 1px solid var(--line);
+  }
+  a { font-weight: 550; }
+}
+
+.muted { color: var(--fg-muted); }
+
+.pager {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  margin-top: 3rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--line);
+  font-size: .95rem;
+
+  a { text-decoration: none; color: var(--accent); }
+  .next { margin-left: auto; text-align: right; }
+}

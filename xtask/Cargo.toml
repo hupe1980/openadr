@@ -1,0 +1,21 @@
+[package]
+name = "xtask"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = "1.0.100"
+serde = "1.0.228"
+serde_json = "1.0.149"
+serde_yaml_ng = "0.10.0"
+# `check-model` builds real instances of the wire types and serialises them, so the field names it
+# compares against the OpenAPI document are the ones that actually go on the wire — not names read
+# out of the source by a regular expression. `check-paths` goes further and drives the **real
+# router**, so what it measures is what the server does rather than a table describing it.
+openadr = { path = "..", default-features = false, features = ["std", "vtn"] }
+axum = "0.8.8"
+tower = { version = "0.5.3", features = ["util"] }
+tokio = { version = "1.50.0", features = ["rt-multi-thread", "macros"] }
+http-body-util = "0.1.3"

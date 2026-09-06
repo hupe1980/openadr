@@ -1,0 +1,53 @@
+# A VTN and its broker, wired together the way a site deployment is.
+#
+#   docker compose -f deploy/compose.yaml up --build
+#
+# What this demonstrates is the half an operator cannot derive from the documentation: that EMQX's
+# authentication and authorization callbacks are satisfied by the request and response shapes
+# `POST /internal/mqtt/{auth,acl}` speak, and that the broker therefore refuses one VEN a subscription
+# to another VEN's topic — which is what makes per-VEN topics privacy rather than convention.
+#
+# Not a production template. The tokens are pre-shared, there is no TLS, and the storage is a file
+# in a volume. `deploy/emqx.conf` and `deploy/mosquitto.conf` are the parts worth copying.
+
+services:
+  vtn:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command:
+      - vtn
+      - --listen=0.0.0.0:3000
+      - --public-url=http://vtn:3000
+      - --database=/data/openadr.sqlite
+      - --bl-token=bl-secret
+      - --ven-token=ven-secret
+      - --mqtt-broker=mqtt://broker:1883
+      - --mqtt-advertise=mqtt://localhost:1883
+      - --mqtt-bl-client=business-logic
+      # The broker authenticates through the VTN, so the VTN is a client of its own broker: it
+      # presents a business-logic token as the MQTT password, and `--mqtt-publisher-client` is what
+      # lets `/internal/mqtt/acl` allow *its* publishes while refusing everyone else's. Without the
+      # last line the broker refuses its own VTN, and the fan-out reconnects for ever.
+      - --mqtt-username=business-logic
+      - --mqtt-password=bl-secret
+      - --mqtt-publisher-client=business-logic
+    environment:
+      RUST_LOG: openadr=debug,warn
+    volumes:
+      - vtn-data:/data
+    ports:
+      - "3000:3000"
+
+  broker:
+    image: emqx/emqx:5.8
+    depends_on:
+      - vtn
+    volumes:
+      - ../deploy/emqx.conf:/opt/emqx/etc/emqx.conf:ro
+    ports:
+      - "1883:1883"
+      - "18083:18083"
+
+volumes:
+  vtn-data:

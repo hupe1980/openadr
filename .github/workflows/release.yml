@@ -1,0 +1,279 @@
+# Cutting a release.
+#
+#     git tag v0.2.0 && git push origin v0.2.0
+#
+# ## The one secret
+#
+# `CARGO_REGISTRY_TOKEN` — a crates.io API token scoped to `publish-update` and to this crate, added
+# under Settings → Secrets and variables → Actions. Everything else uses `GITHUB_TOKEN`, and cosign
+# signs against the run's OIDC identity rather than a key anyone holds. crates.io Trusted Publishing
+# would remove even this one: drop the `env:` block on the publish step and give that job
+# `id-token: write`.
+#
+# ## Order
+#
+# `ci` runs `ci.yml` itself — every job of it, at the tagged commit — rather than a list of the
+# guards it happens to contain. The first draft of this file re-stated them and had already dropped
+# four of the seven. `verify` adds only what CI has no reason to check.
+#
+# `crates-io` goes first among the publishing jobs: it is the one step that cannot be undone, and it
+# names an `environment` so a required reviewer can be put in front of it without editing this file.
+
+name: Release
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # No `RUSTFLAGS` here. A reusable workflow does not inherit the caller's `env`, so setting it
+  # would apply to the release jobs and *not* to the guards in `ci.yml` — which sets its own — and
+  # a flag that covers some of a build is worse than one that covers none of it.
+
+jobs:
+  # Every guard, from the one file that defines them.
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  verify:
+    name: Verify the release itself
+    needs: ci
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The tag is the claim; `Cargo.toml` is the fact. A mismatch here is cheap and a mismatch
+      # discovered by a user is not.
+      - name: The tag and the crate agree
+        id: version
+        run: |
+          crate=$(cargo metadata --no-deps --format-version 1 \
+            | jq -r '.packages[] | select(.name == "openadr") | .version')
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$crate" != "$tag" ]; then
+            echo "::error::tag $GITHUB_REF_NAME says $tag, Cargo.toml says $crate"
+            exit 1
+          fi
+          echo "version=$crate" >> "$GITHUB_OUTPUT"
+
+      # Packaging is where `specs/` and `concepts/` would leak into the `.crate` if the `exclude`
+      # list in `Cargo.toml` ever stopped covering them. `specs/` is the OpenADR Alliance's
+      # publication set, which this project fetches rather than vendors; republishing it under this
+      # crate's name is a redistribution it has chosen not to make.
+      - name: The package holds only the library
+        run: |
+          cargo package --list > /tmp/packaged.txt
+          if grep -qE '^(specs|concepts|site|deploy|scripts|\.github)/' /tmp/packaged.txt; then
+            echo "::error::the .crate would ship files that are not part of the library"
+            grep -E '^(specs|concepts|site|deploy|scripts|\.github)/' /tmp/packaged.txt
+            exit 1
+          fi
+          wc -l < /tmp/packaged.txt
+
+      - name: Dry-run publish
+        run: cargo publish --dry-run
+
+  crates-io:
+    name: crates.io
+    needs: verify
+    runs-on: ubuntu-latest
+    # The only step in this workflow that cannot be undone, so it runs alone and first.
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish
+
+  binaries:
+    name: ${{ matrix.target }}
+    needs: verify
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+          # Native. `ubuntu-24.04-arm` has been generally available, and free for public
+          # repositories, since August 2025; before it this was a cross-compile on an amd64 runner.
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+          # `macos-latest` is Apple Silicon.
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          # Cross-compiled, and there is no longer an alternative: GitHub has retired the Intel
+          # macOS runners. Pure Rust with no C in the tree, so the arm64 runner builds it with
+          # nothing but `rustup target add` — which is exactly the property `deny.toml` protects.
+          - target: x86_64-apple-darwin
+            os: macos-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+
+      # musl static, so the "one binary on a site controller" claim survives contact with whatever
+      # libc that controller has. The feature list is what a deployment uses; `conformance` is in it
+      # because `openadr conformance` is how somebody measures a VTN they did not build.
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: openadr
+          target: ${{ matrix.target }}
+          features: vtn,client,ven,conformance,internal-auth,external-auth,sqlite,postgres,webhook,mqtt,mdns,tls
+          archive: openadr-$tag-$target
+          checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  image:
+    name: Image (${{ matrix.platform }})
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            os: ubuntu-latest
+          - platform: linux/arm64
+            os: ubuntu-24.04-arm
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Each architecture on its own runner, pushed by digest and stitched together below. The
+      # alternative is one runner building both under QEMU, which for this dependency tree costs the
+      # better part of an hour; native arm64 runners removed the reason to.
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/Dockerfile
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+          provenance: mode=max
+          sbom: true
+
+      - name: Record the digest
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ strategy.job-index }}
+          path: /tmp/digests/*
+          retention-days: 1
+
+  manifest:
+    name: Image manifest
+    needs: [verify, image]
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+      # Cosign signs against this run's OIDC identity: the signature says which workflow, at which
+      # commit, produced the image, and there is no key for anyone to lose.
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digest-*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: sigstore/cosign-installer@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+
+      - name: Stitch the per-architecture images into one tag
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+
+      # The *manifest list's* digest, not any one architecture's, so `cosign verify` succeeds for
+      # whichever image a puller resolves. `verify.outputs.version` rather than the tag name: the
+      # semver tag drops the `v` that `github.ref_name` carries.
+      - name: Sign
+        run: |
+          digest=$(docker buildx imagetools inspect \
+            "ghcr.io/${{ github.repository }}:${{ needs.verify.outputs.version }}" \
+            --format '{{json .Manifest}}' | jq -r .digest)
+          cosign sign --yes "ghcr.io/${{ github.repository }}@${digest}"
+
+  release:
+    name: GitHub release
+    needs: [verify, crates-io, binaries, manifest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-cyclonedx
+
+      # The bill of materials describes the build that was just released, which is the only version
+      # of it anybody can act on. Attached to the release rather than to the run that produced it,
+      # because a procurement review six months later can find one and not the other.
+      - name: SBOM
+        run: |
+          cargo cyclonedx --all-features --format json --spec-version 1.5
+          mv openadr.cdx.json "openadr-${{ needs.verify.outputs.version }}.cdx.json"
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: openadr-${{ needs.verify.outputs.version }}.cdx.json
+          generate_release_notes: true
+          body: |
+            OpenADR ${{ needs.verify.outputs.version }} — see the
+            [documentation](https://hupe1980.github.io/openadr/docs/) and
+            [what is and is not implemented](https://hupe1980.github.io/openadr/docs/status/).
+
+            ```console
+            cargo install openadr --version ${{ needs.verify.outputs.version }} \
+                --features vtn,client,internal-auth,sqlite
+            docker pull ghcr.io/${{ github.repository }}:${{ needs.verify.outputs.version }}
+            ```
+
+            The container image is signed. Verify it before you run it:
+
+            ```console
+            cosign verify ghcr.io/${{ github.repository }}:${{ needs.verify.outputs.version }} \
+                --certificate-identity-regexp '^https://github.com/${{ github.repository }}/' \
+                --certificate-oidc-issuer https://token.actions.githubusercontent.com
+            ```

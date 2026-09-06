@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+
+{% block structured_data %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "WebSite",
+  "name": "openadr",
+  "alternateName": "openadr — OpenADR 3.1 in Rust",
+  "url": {{ config.base_url | json_encode | safe }},
+  "description": {{ config.description | json_encode | safe }},
+  "inLanguage": {{ config.default_language | json_encode | safe }}
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareSourceCode",
+  "name": "openadr",
+  "description": {{ config.description | json_encode | safe }},
+  "url": {{ config.base_url | json_encode | safe }},
+  "codeRepository": {{ config.extra.repository | json_encode | safe }},
+  "downloadUrl": {{ config.extra.crate | json_encode | safe }},
+  "programmingLanguage": "Rust",
+  "runtimePlatform": "Rust 1.96+, no_std + alloc, WebAssembly",
+  "license": "https://spdx.org/licenses/Apache-2.0.html",
+  "isAccessibleForFree": true,
+  "keywords": "OpenADR, OpenADR 3.1, demand response, smart grid, VTN server, VEN runtime, Rust, energy flexibility, grid-aware charging, object privacy, MQTT, webhooks, mDNS"
+}
+</script>
+{% endblock structured_data %}
+
+{% block content %}
+<section class="hero">
+  <div class="wrap">
+    <p class="eyebrow">OpenADR 3.1 · Rust · Apache-2.0 OR MIT</p>
+    <h1>OpenADR 3.1 in Rust — a VTN server, a VEN runtime and a typed client.</h1>
+    <p class="lede">
+      Demand response without the parts that lose a dispatch instruction. One crate, sliced with
+      Cargo features: it runs on a Raspberry Pi with SQLite and on a cluster with PostgreSQL, and
+      the wire model compiles for a microcontroller.
+    </p>
+    <p class="cta">
+      <a class="button primary" href="{{ get_url(path='@/docs/getting-started.md') | safe }}">Get started</a>
+      <a class="button" href="{{ get_url(path='@/docs/_index.md') | safe }}">Documentation</a>
+    </p>
+    <div class="install">
+      <code>openadr = { version = "0.1", features = ["vtn", "postgres"] }</code>
+    </div>
+  </div>
+</section>
+
+<section class="wrap prose">
+  <h2>What OpenADR is for</h2>
+  <p>
+    A utility or grid operator needs flexible load to move: charge later, curtail now, follow this
+    price curve. OpenADR is the standard it uses to say so. A <strong>VTN</strong> (Virtual Top
+    Node) publishes programmes and events; a <strong>VEN</strong> (Virtual End Node) — a charge
+    point, a battery, a heat pump, a building controller — reads them, acts, and reports back.
+  </p>
+  <p>
+    Version 3 replaced 2.0b's SOAP with REST and JSON. Version 3.1, released in 2025, added push
+    over MQTT, <em>object privacy</em>, and plain string targets. This crate implements 3.1, and
+    ships both ends of it.
+    <a href="{{ get_url(path='@/docs/what-is-openadr.md') | safe }}">The protocol in fifteen minutes →</a>
+  </p>
+</section>
+
+<section class="wrap">
+  <h2>What it does that the alternatives do not</h2>
+  <div class="cards">
+
+    <article class="card">
+      <h3>Object privacy on every path</h3>
+      <p>
+        A charge point operator must never learn which other groups an event targets — that is a
+        competitor's dispatch schedule. One <code>Access</code> value decides visibility for REST
+        reads, webhook delivery <em>and</em> MQTT topic routing, and renders itself into the
+        <code>WHERE</code> clause so filtering happens inside the query rather than over a page that
+        has already been cut.
+      </p>
+      <p class="note">
+        On a broker the VTN answers the authorization callback too, so one VEN cannot subscribe to
+        another's topic — which the specification requires and leaves entirely to the implementer.
+      </p>
+    </article>
+
+    <article class="card">
+      <h3>A dispatch instruction cannot be lost</h3>
+      <p>
+        Notifications are written to a transactional outbox in the <em>same transaction</em> as the
+        object that caused them, then delivered by a leased dispatcher. There is no window in which
+        an event exists and nobody has been told — and nothing in OpenADR can say afterwards that a
+        notification was never sent.
+      </p>
+      <p class="note">
+        Every queued entry names the transport that owns it, so an entry nothing can send is
+        reported as undeliverable rather than deleted as sent.
+      </p>
+    </article>
+
+    <article class="card">
+      <h3>Interoperability is measured</h3>
+      <p>
+        <code>openadr conformance</code> runs forty-eight black-box checks against <em>any</em>
+        OpenADR 3.1 VTN, each citing the sentence of the specification it tests. A check that could
+        not run is reported as skipped and never counted as a pass.
+      </p>
+      <p class="note">
+        Run against another implementation, it found six required divergences there — and two
+        defects here.
+      </p>
+    </article>
+
+    <article class="card">
+      <h3>Money is decimal</h3>
+      <p>
+        Payload values are prices, fees and capacities — settled money.
+        <code>Value::Number</code> holds a <code>rust_decimal::Decimal</code>, not an
+        <code>f64</code>, so <code>0.1&nbsp;+&nbsp;0.2&nbsp;==&nbsp;0.3</code> holds exactly and a
+        tariff round-trips through JSON unchanged.
+      </p>
+    </article>
+
+    <article class="card">
+      <h3>The specification's sentinels are types</h3>
+      <p>
+        <code>P9999Y</code> means "forever" and <code>0001-01-01</code> means "now". Left as strings
+        they are one forgotten comparison away from a schedule that runs for nine thousand years.
+        Here they are <code>Duration::Forever</code> and <code>StartTime::Now</code> — the match arm
+        has to exist.
+      </p>
+    </article>
+
+    <article class="card">
+      <h3>Polling is the normal case, and push is a hint</h3>
+      <p>
+        Because in every deployment surveyed polling is what happens: Dutch grid-aware charging
+        re-reads a 48-hour window, Belgian NetFlex clients poll their schedule, Californian price
+        clients poll hourly. Every <code>GET</code> carries an <code>ETag</code>, and both the
+        client and the VEN runtime use it — a quiet cycle costs a <code>304</code> with no body.
+      </p>
+      <p class="note">
+        MQTT push is here on both ends, and the VEN never reads a notification's payload: it wakes
+        the loop, the loop re-reads from the VTN. A broker can cost a VEN latency; it cannot cost it
+        correctness.
+      </p>
+    </article>
+
+    <article class="card">
+      <h3>The intervals an event does not list still exist</h3>
+      <p>
+        A tariff that loops for ever and a capability forecast that declares no intervals at all are
+        both ordinary indexing into one sequence: interval fifty thousand of an hourly tariff
+        running since 2020 costs two multiplications, not fifty thousand clones.
+      </p>
+      <p class="note">
+        It is what makes <code>repeat: -1</code> and <code>numIntervals: 48</code> mean what the
+        User Guide's own worked scenarios say they mean.
+      </p>
+    </article>
+
+    <article class="card">
+      <h3>Authentication is a trait, with three real backends</h3>
+      <p>
+        Fluvius forbids OAuth2 and requires mutual TLS. Californian price servers are anonymous.
+        Dutch grid-aware charging uses Keycloak. A VTN that assumes one of those cannot serve the
+        others, so this one runs its own token endpoint, validates somebody else's JWTs against a
+        JWKS, or accepts a pre-shared token.
+      </p>
+    </article>
+
+    <article class="card">
+      <h3>It runs where the load is</h3>
+      <p>
+        The wire model, the payload schema and the domain core are <code>no_std</code> + alloc and
+        build for <code>thumbv7em-none-eabihf</code> and WebAssembly — the appliance-class VEN the
+        specification's own security chapter has in mind. No C toolchain anywhere in the tree, and
+        <code>cargo deny</code> keeps it that way.
+      </p>
+    </article>
+
+    <article class="card">
+      <h3>The single binary is actually single</h3>
+      <p>
+        <code>--tls-cert</code> and <code>--tls-key</code> serve HTTPS directly, so a site controller
+        needs no reverse proxy in front of it; <code>--tls-client-ca</code> refuses a connection
+        whose certificate that CA did not issue, during the handshake.
+      </p>
+      <p class="note">
+        And it describes itself: <code>GET /openapi.json</code> covers the VTN you fetched it from,
+        with the broker endpoints absent when there is no broker — named by
+        <code>openapi_url</code> in the mDNS record, so a VEN that finds the VTN can read its API
+        without being told anything else.
+      </p>
+    </article>
+
+  </div>
+</section>
+
+<section class="wrap prose">
+  <h2>A VTN in one command</h2>
+  {%- filter markdown(inline=false) | safe %}
+```console
+$ cargo install openadr --features vtn,client,internal-auth,sqlite
+
+$ openadr vtn --database ./openadr.sqlite \
+      --client-hashed "bl-1:$(openadr hash-secret "$BL_SECRET"):bl" \
+      --client-hashed "ven-1:$(openadr hash-secret "$VEN_SECRET"):ven"
+2026-02-11T09:00:00Z  INFO openadr::vtn: VTN listening addr=0.0.0.0:3000 base_path=/openadr3/3.1.0
+```
+  {% endfilter %}
+  <p>
+    That is a complete OpenADR 3.1 VTN: every endpoint, the OAuth2 client-credentials grant with
+    Argon2id-hashed secrets, object privacy, durable storage, a notification queue,
+    <code>GET /metrics</code> and a dead-letter view — one binary and one file. Swap
+    <code>--database</code> for a <code>postgres://</code> URL and the same binary is the shared,
+    multi-instance deployment.
+  </p>
+  <p>
+    The same binary is also the client, so nothing above needs a second tool:
+  </p>
+  {%- filter markdown(inline=false) | safe %}
+```console
+$ openadr post programs --data '{"programName":"grid-aware-charging"}'
+$ openadr get events --program prg-00000001 --active
+$ openadr watch events --targets group1        # prints only when something changes
+```
+  {% endfilter %}
+  <p><a class="more" href="{{ get_url(path='@/docs/getting-started.md') | safe }}">Walk through it →</a></p>
+</section>
+
+<section class="wrap prose">
+  <h2>And a VEN that acts on what it reads</h2>
+  {%- filter markdown(inline=false) | safe %}
+```rust
+let ven = VenRuntime::with_meter(client, config, HouseMeter);
+ven.register().await?;                     // idempotent, and checks the VTN's clock
+
+loop {
+    ven.sync().await?;                     // conditional: a quiet cycle is a 304
+    if let Some(segment) = ven.active_at(ven.now()) {
+        act_on(&segment.payloads);         // priority already resolved
+    }
+    ven.submit_due_reports().await?;       // each window filed exactly once
+    ven.wait_for_work().await;             // wakes early on an MQTT notification
+}
+```
+  {% endfilter %}
+  <p>
+    Registration, resource reconciliation, one conflict-resolved timeline per programme,
+    <code>randomizeStart</code> applied from a seed, a clock-skew guard, and report scheduling that
+    survives a restart — across a looping tariff and against intervals the event never lists. What
+    the load does and what the meter reads are yours; the rest is not your problem.
+  </p>
+  <p><a class="more" href="{{ get_url(path='@/docs/ven-runtime.md') | safe }}">The VEN runtime →</a></p>
+</section>
+
+<section class="wrap prose">
+  <h2>Where it stands</h2>
+  <table class="status">
+    <thead><tr><th>Layer</th><th>Cargo feature</th><th>State</th></tr></thead>
+    <tbody>
+      <tr><td>Wire model, payload schema, domain core</td><td>always on, <code>no_std</code></td><td class="yes">Complete</td></tr>
+      <tr><td>VTN server — every endpoint, scopes, object privacy, <code>ETag</code>, metrics</td><td><code>vtn</code></td><td class="yes">Complete</td></tr>
+      <tr><td>Storage — in-memory, SQLite, PostgreSQL</td><td><code>sqlite</code>, <code>postgres</code></td><td class="yes">Complete</td></tr>
+      <tr><td>Authentication — own token endpoint, JWKS, pre-shared, anonymous</td><td><code>internal-auth</code>, <code>external-auth</code></td><td class="yes">Complete</td></tr>
+      <tr><td>Webhook delivery — echo challenge, SSRF guard, signed payloads, outbox</td><td><code>webhook</code></td><td class="yes">Complete</td></tr>
+      <tr><td>MQTT — per-VEN fan-out, QoS 1 publisher, broker authorization callbacks, VEN-side subscriber</td><td><code>mqtt</code></td><td class="yes">Complete</td></tr>
+      <tr><td>Typed client — role as a type parameter, conditional reads</td><td><code>client</code></td><td class="yes">Complete</td></tr>
+      <tr><td>VEN runtime — registration, sync, timeline, reports, clock guard, push hints</td><td><code>ven</code></td><td class="yes">Complete</td></tr>
+      <tr><td>Local discovery — <code>_openadr3._tcp</code>, advertised and browsed</td><td><code>mdns</code></td><td class="yes">Complete</td></tr>
+      <tr><td>Transport security — TLS 1.2+, and a client CA that gates the connection</td><td><code>tls</code></td><td class="yes">Complete</td></tr>
+      <tr><td>OpenAPI — <code>GET /openapi.json</code>, narrowed to what this VTN serves</td><td><code>vtn</code></td><td class="yes">Complete</td></tr>
+      <tr><td>Report retention — bounded, oldest-first, off by default</td><td><code>vtn</code></td><td class="yes">Complete</td></tr>
+      <tr><td>Conformance suite — 48 clause-citing checks against any VTN</td><td><code>conformance</code></td><td class="part">One reading, taken by hand</td></tr>
+      <tr><td>Certification against the Alliance test tool</td><td>—</td><td class="no">Not attempted</td></tr>
+    </tbody>
+  </table>
+  <p class="note">
+    449 tests, including 19 property tests and a 52-behaviour storage conformance suite that all
+    three backends run. Clippy, rustfmt and rustdoc clean at <code>-D warnings</code>; every feature
+    combination and both <code>no_std</code> targets built in CI.
+  </p>
+  <p><a class="more" href="{{ get_url(path='@/docs/status.md') | safe }}">The full picture, including what is missing →</a></p>
+</section>
+
+<section class="wrap prose closing">
+  <h2>Start here</h2>
+  <ul class="next">
+    <li><a href="{{ get_url(path='@/docs/getting-started.md') | safe }}"><strong>Getting started</strong></a> — a running VTN and a client talking to it, in about five minutes.</li>
+    <li><a href="{{ get_url(path='@/docs/what-is-openadr.md') | safe }}"><strong>What OpenADR is</strong></a> — the six objects, targets, intervals and reports, if the protocol is new to you.</li>
+    <li><a href="{{ get_url(path='@/docs/object-privacy.md') | safe }}"><strong>Object privacy</strong></a> — how a VEN is granted visibility, and why it never sees the other groups. Worth reading before a pilot.</li>
+    <li><a href="{{ get_url(path='@/docs/security.md') | safe }}"><strong>Security model</strong></a> — what a VEN structurally cannot do, and what is left to your deployment.</li>
+    <li><a href="{{ get_url(path='@/docs/spec-notes.md') | safe }}"><strong>Reading the specification</strong></a> — every ambiguity and deliberate departure, with the reasoning.</li>
+  </ul>
+</section>
+{% endblock content %}

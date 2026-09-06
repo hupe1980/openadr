@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="openadr">
+  <rect width="32" height="32" rx="7" fill="#0f6f5c"/>
+  <!-- An interval sequence with a gap: a high-priority event splitting a long one. -->
+  <rect x="6"  y="9"  width="7"  height="6" rx="1.5" fill="#e6f2ee"/>
+  <rect x="15" y="9"  width="11" height="6" rx="1.5" fill="#7fd8c2"/>
+  <rect x="6"  y="17" width="20" height="6" rx="1.5" fill="#e6f2ee"/>
+</svg>

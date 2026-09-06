@@ -1,0 +1,231 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Callable, so `release.yml` runs *these* guards rather than a copy of some of them. A release
+  # that re-stated the list would be a second statement of it, and the first version of this file
+  # had already dropped four jobs from the copy.
+  workflow_call:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    # The Postgres backend's conformance run needs a real server; without one the suite skips
+    # itself, which would mean a backend quietly stopping being tested.
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: openadr
+          POSTGRES_PASSWORD: openadr
+          POSTGRES_DB: openadr
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U openadr"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      OPENADR_TEST_POSTGRES: postgres://openadr:openadr@localhost:5432/openadr
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features
+
+      # `--test-threads=1` for the storage suites only: every backend shares one Postgres
+      # database and truncates it between behaviours.
+      #
+      # Two suites reach for Docker. The Postgres backend uses `OPENADR_TEST_POSTGRES` above rather
+      # than starting a container of its own — a service container is already here — and
+      # `tests/keycloak.rs` starts a real Keycloak, because the half of an OAuth2 integration that
+      # actually breaks is what somebody else's server puts in `aud`, `azp` and `scope`. Both skip,
+      # loudly, on a machine with no Docker.
+      # `--workspace`, so `xtask`'s own tests run too. Without it they never did: the generator that
+      # writes the payload table, and `check-paths`' reading of a `security` block, were tested by
+      # six tests nothing executed.
+      - name: Test
+        run: cargo test --workspace --all-features -- --test-threads=1
+
+      - name: Docs
+        run: cargo doc --no-deps --all-features
+        env:
+          RUSTDOCFLAGS: -D warnings
+
+  no-std:
+    name: no_std
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf, wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      # The model, schema and core layers must stay usable on an appliance-class VEN.
+      - name: Bare metal (Cortex-M4F)
+        run: cargo check --no-default-features --target thumbv7em-none-eabihf
+
+      - name: WebAssembly
+        run: cargo check --no-default-features --target wasm32-unknown-unknown
+
+      # A webhook receiver may be an appliance too, and the signature scheme carries no HTTP stack.
+      - name: Webhook signature verification, bare metal
+        run: cargo check --no-default-features --features webhook-signature --target thumbv7em-none-eabihf
+
+  features:
+    name: Feature combinations
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-hack
+
+      # Features must be additive: no combination may fail to build. `--no-dev-deps` is what makes
+      # that meaningful — dev-dependencies are not feature-sliced, so without it every combination
+      # would build against the union. It edits `Cargo.toml` for the duration and puts it back, which
+      # is safe on a runner and worth knowing about locally: a run killed part-way leaves the file
+      # without its `[dev-dependencies]`.
+      - run: cargo hack check --each-feature --no-dev-deps
+
+  conformance:
+    name: Conformance
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # The suite is black-box: it speaks HTTP and imports nothing from `vtn`. Running it against
+      # our own binary proves the suite works; running it against somebody else's is the point, and
+      # is what turns interoperability from an assertion into a number. See ROADMAP H-3.
+      - name: Build
+        run: cargo build --all-features
+
+      # No `--mqtt-broker`: pointing the VTN at a broker that is not running would advertise a
+      # binding it cannot publish to, which is a configuration the suite is entitled to complain
+      # about. The MQTT checks therefore *skip* here, and are exercised against a configured VTN in
+      # `tests/conformance.rs`; the publisher itself is exercised against a real broker in
+      # `tests/mqtt.rs`.
+      - name: Start a VTN
+        run: |
+          ./target/debug/openadr vtn \
+            --listen 127.0.0.1:3000 \
+            --bl-token ci-bl --ven-token ci-ven \
+            --webhooks --webhook-key ci &
+          for _ in $(seq 1 60); do
+            curl -sf http://127.0.0.1:3000/health >/dev/null && break
+            sleep 0.5
+          done
+
+      # `--strict` so a *recommended* or *extension* check failing also fails the job. Against our
+      # own VTN there is no excuse for either; against a third party there would be, which is why
+      # the flag exists rather than the severities being collapsed.
+      - name: Run the suite
+        run: |
+          ./target/debug/openadr conformance \
+            --url http://127.0.0.1:3000/openadr3/3.1.0 \
+            --bl-token ci-bl --ven-token ci-ven --ven-client-id ven \
+            --strict
+
+      - name: Publish the result
+        if: always()
+        run: |
+          ./target/debug/openadr conformance \
+            --url http://127.0.0.1:3000/openadr3/3.1.0 \
+            --bl-token ci-bl --ven-token ci-ven --ven-client-id ven \
+            --json > conformance.json || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-report
+          path: conformance.json
+
+  spec-drift:
+    name: Specification drift
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # Three guards, covering the three things `openadr3.yaml` says.
+      # `check-drift` fails if the Alliance changed the payload enumerations and the generated table
+      # was not regenerated with `cargo xtask codegen`; `check-model` fails if the objects gained or
+      # lost a field; `check-paths` drives the real router and fails if an endpoint the document
+      # declares is not routed, or if the scopes it demands differ from the document's `security`
+      # blocks — which is the half that would have caught D-049 mechanically. Between them nothing
+      # in the document can change upstream without this job saying so.
+      - name: Fetch the specification
+        run: cargo xtask spec-sync
+      - name: Check the generated payload table
+        run: cargo xtask check-drift
+      - name: Check the wire model against the OpenAPI document
+        run: cargo xtask check-model
+      - name: Check the routes and scopes against the OpenAPI document
+        run: cargo xtask check-paths
+
+  deploy:
+    name: A real broker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # `deploy/` is not documentation about a broker; it is a configuration a broker has to accept.
+      # The test brings up `deploy/compose.yaml` itself — the shipped image, the shipped `emqx.conf`,
+      # EMQX — and puts the four claims `deploy/README.md` makes to a real MQTT client.
+      #
+      # Running the pair is what found that a broker delegating authentication to the VTN locks the
+      # VTN's own publisher out of it, which neither system's tests could see.
+      - name: Object privacy, through the broker
+        run: cargo test --all-features --test broker -- --ignored --nocapture
+
+      - name: Logs
+        if: failure()
+        run: docker compose -f deploy/compose.yaml logs
+
+  supply-chain:
+    name: Supply chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@cargo-deny
+      - uses: taiki-e/install-action@cargo-cyclonedx
+
+      # Advisories, licences, banned crates and unknown registries, in one pass. `deny.toml` is
+      # where an unfixable advisory is *recorded with its reason* rather than silenced: every entry
+      # names the crate that pins the vulnerable version and why the affected code path is not
+      # reached here. The ban list is what stops `aws-lc-rs` returning through a dependency's
+      # default features — the crate installs the `ring` provider, and two providers in one binary
+      # is the ambiguity `src/crypto.rs` exists to resolve.
+      - name: Advisories, licences and bans
+        run: cargo deny check
+
+      # Anyone deploying this into a utility has to produce a bill of materials. Producing it here
+      # means it describes the build that was actually tested.
+      - name: SBOM
+        run: cargo cyclonedx --all-features --format json --spec-version 1.5
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: "**/*.cdx.json"

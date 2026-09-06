@@ -1,0 +1,80 @@
+name: Site
+
+on:
+  push:
+    branches: [main]
+    paths: ["site/**", ".github/workflows/site.yml"]
+  pull_request:
+    paths: ["site/**", ".github/workflows/site.yml"]
+  workflow_dispatch:
+
+# One deployment at a time, and never cancel one halfway: a partially published site is worse
+# than a stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # Supplies the base URL Pages will actually serve from, so canonical URLs, the sitemap and
+      # the Open Graph tags are right on a project page as well as on a custom domain.
+      - id: pages
+        uses: actions/configure-pages@v5
+        if: github.ref == 'refs/heads/main'
+
+      - name: Install Zola
+        run: |
+          curl -sSfL https://github.com/getzola/zola/releases/download/v0.23.4/zola-v0.23.4-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C /usr/local/bin zola
+
+      # Fails on a broken internal link, a missing template variable or an unreadable front
+      # matter block. External links are checked separately, below.
+      - name: Check
+        run: zola --root site check --skip-external-links
+
+      - name: Build
+        run: |
+          zola --root site build \
+            --base-url "${{ steps.pages.outputs.base_url || 'https://hupe1980.github.io/openadr' }}"
+
+      - uses: actions/upload-pages-artifact@v3
+        if: github.ref == 'refs/heads/main'
+        with:
+          path: site/public
+
+  deploy:
+    name: Deploy
+    if: github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    permissions:
+      pages: write
+      id-token: write
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4
+
+  links:
+    name: External links
+    runs-on: ubuntu-latest
+    # Advisory only: a third-party site being down is not a reason to fail the build, and
+    # docs.rs and crates.io do not answer until the crate is published.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Zola
+        run: |
+          curl -sSfL https://github.com/getzola/zola/releases/download/v0.23.4/zola-v0.23.4-x86_64-unknown-linux-gnu.tar.gz \
+            | tar -xz -C /usr/local/bin zola
+      - run: zola --root site check

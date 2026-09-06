@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+
+{% block structured_data %}
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "CollectionPage",
+  "name": {{ section.title | json_encode | safe }},
+  "description": {{ section.description | default(value=config.description) | json_encode | safe }},
+  "url": {{ section.permalink | json_encode | safe }},
+  "inLanguage": {{ config.default_language | json_encode | safe }},
+  "hasPart": [
+    {%- for p in section.pages %}
+    { "@type": "TechArticle",
+      "name": {{ p.title | json_encode | safe }},
+      "url": {{ p.permalink | json_encode | safe }} }{% if not loop.last %},{% endif %}
+    {%- endfor %}
+  ]
+}
+</script>
+{% endblock structured_data %}
+
+{% block content %}
+<div class="wrap docs">
+  {% include "_sidebar.html" %}
+
+  <article class="prose">
+    <h1>{{ section.title }}</h1>
+    {{ section.content | safe }}
+
+    <h2 id="pages">Everything in this section</h2>
+    <ul class="toc">
+      {%- for page in section.pages %}
+      <li>
+        <a href="{{ page.permalink | safe }}">{{ page.title }}</a>
+        {%- if page.description %}<span class="muted"> — {{ page.description }}</span>{% endif %}
+      </li>
+      {%- endfor %}
+    </ul>
+  </article>
+</div>
+{% endblock content %}

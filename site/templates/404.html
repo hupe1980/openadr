@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="wrap prose" style="padding-top:5rem">
+  <p class="eyebrow">404</p>
+  <h1>That page is not here.</h1>
+  <p class="lede">
+    It may have moved, or the link may be from an older version of this site.
+  </p>
+  <ul class="next">
+    <li><a href="{{ get_url(path='@/docs/_index.md') | safe }}"><strong>Documentation</strong></a> — everything, in order.</li>
+    <li><a href="{{ get_url(path='@/docs/getting-started.md') | safe }}"><strong>Getting started</strong></a> — a running VTN in about five minutes.</li>
+    <li><a href="{{ config.extra.api_docs }}" rel="noopener"><strong>API reference</strong></a> — item-by-item, on docs.rs.</li>
+    <li><a href="{{ config.extra.repository }}" rel="noopener"><strong>Source</strong></a> — if you think something is missing, an issue is welcome.</li>
+  </ul>
+</section>
+{% endblock content %}
