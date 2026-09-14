@@ -328,6 +328,15 @@ pub struct VenRuntime<M = NoMeter> {
 #[derive(Debug, Default)]
 struct Inner {
     ven_id: Option<ObjectId>,
+    /// The resources this VEN means to have.
+    ///
+    /// Seeded from [`VenConfig::resources`] and extendable at runtime through
+    /// [`VenRuntime::add_resource`]. It is state rather than configuration because a gateway
+    /// discovers appliances while it runs, which is the case [`VenRuntime::sync_resources`]
+    /// documented and — until this moved — could not reach: the configuration is consumed at
+    /// construction, so there was no way to name a resource the runtime did not start with
+    /// (D-144).
+    desired: Vec<ResourceName>,
     resources: BTreeMap<ResourceName, ObjectId>,
     events_etag: Option<String>,
     events: BTreeMap<ObjectId, Event>,
@@ -404,12 +413,16 @@ impl VenRuntime<NoMeter> {
 impl<M: Meter> VenRuntime<M> {
     /// A runtime that reports what a meter reads.
     pub fn with_meter(client: Client<VirtualEndNode>, config: VenConfig, meter: M) -> Self {
+        let inner = Inner {
+            desired: config.resources.clone(),
+            ..Inner::default()
+        };
         Self {
             client,
             config,
             clock: Arc::new(SystemClock),
             meter,
-            inner: RwLock::new(Inner::default()),
+            inner: RwLock::new(inner),
             wake: Arc::new(tokio::sync::Notify::new()),
         }
     }
@@ -509,10 +522,27 @@ impl<M: Meter> VenRuntime<M> {
         Ok(ven)
     }
 
+    /// Add a resource this VEN should have, and create it at the VTN if it is missing.
+    ///
+    /// For a gateway that discovers an appliance behind it after it has already registered — the
+    /// case [`VenRuntime::sync_resources`] was written for and, until the wanted set moved out of
+    /// the immutable configuration, could not express (D-144).
+    ///
+    /// Idempotent: naming one that already exists reconciles and changes nothing.
+    pub async fn add_resource(&self, name: ResourceName) -> Result<(), VenError> {
+        {
+            let mut inner = self.write();
+            if !inner.desired.contains(&name) {
+                inner.desired.push(name);
+            }
+        }
+        self.sync_resources().await
+    }
+
     /// Re-run resource reconciliation without re-reading the VEN object.
     ///
-    /// For a VEN whose set of resources changes while it runs — a gateway that has just discovered
-    /// another appliance behind it.
+    /// Creates any wanted resource the VTN does not have — after a restart, or after business logic
+    /// removed one. [`VenRuntime::add_resource`] is how the wanted set grows.
     pub async fn sync_resources(&self) -> Result<(), VenError> {
         let ven_id = self.read().ven_id.clone().ok_or(VenError::NotRegistered)?;
         self.reconcile_resources(&ven_id).await
@@ -523,9 +553,10 @@ impl<M: Meter> VenRuntime<M> {
         self.read().resources.clone()
     }
 
-    /// Create the configured resources that do not exist yet.
+    /// Create the wanted resources that do not exist yet.
     async fn reconcile_resources(&self, ven_id: &ObjectId) -> Result<(), VenError> {
-        if self.config.resources.is_empty() {
+        let desired = self.read().desired.clone();
+        if desired.is_empty() {
             return Ok(());
         }
         let existing: Vec<Resource> = self
@@ -538,7 +569,7 @@ impl<M: Meter> VenRuntime<M> {
             .map(|r| (r.resource_name.clone(), r.id.clone()))
             .collect();
 
-        for name in &self.config.resources {
+        for name in &desired {
             if by_name.contains_key(name) {
                 continue;
             }

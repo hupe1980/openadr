@@ -27,6 +27,8 @@ mod outbox;
 #[cfg(feature = "postgres")]
 mod postgres;
 #[cfg(any(feature = "sqlite", feature = "postgres"))]
+mod seal;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
 mod sql;
 #[cfg(feature = "sqlite")]
 mod sqlite;
@@ -40,9 +42,46 @@ pub use outbox::{
 #[cfg(feature = "postgres")]
 #[cfg_attr(docsrs, doc(cfg(feature = "postgres")))]
 pub use postgres::PostgresStorage;
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "sqlite", feature = "postgres"))))]
+pub use seal::Sealer;
 #[cfg(feature = "sqlite")]
 #[cfg_attr(docsrs, doc(cfg(feature = "sqlite")))]
 pub use sqlite::SqliteStorage;
+
+/// The shape of the tables this release writes.
+///
+/// **Bump this whenever the schema changes.** It is not a migration mechanism and this project has
+/// none: the schema is authoritative rather than historical, and a change to it is a change to the
+/// file format. What the stamp buys is that the mismatch is *loud*.
+///
+/// The failure it prevents is specific and silent. The schema is applied with
+/// `CREATE TABLE IF NOT EXISTS`, which adds a table that is missing and never alters one that is
+/// present — so a release that adds a column to an existing table leaves a database that is half
+/// one shape and half another, and the first symptom is a query failing at three in the morning
+/// rather than a refusal at start-up. A rolling deploy makes it worse by running two binaries
+/// against one database by definition.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+#[cfg_attr(docsrs, doc(cfg(any(feature = "sqlite", feature = "postgres"))))]
+pub const SCHEMA_VERSION: i64 = 1;
+
+/// Read the stamp and decide whether this binary may use this database.
+///
+/// `found` is `None` for a database that carries no stamp at all, which is either brand new or was
+/// written before stamping existed. Both are treated as this version: the project is pre-release,
+/// there is nothing older to be compatible with, and refusing every development database to guard
+/// against a history that does not exist yet is ceremony.
+#[cfg(any(feature = "sqlite", feature = "postgres"))]
+pub(crate) fn check_schema_version(found: Option<i64>) -> Result<(), StorageError> {
+    match found {
+        None | Some(SCHEMA_VERSION) => Ok(()),
+        Some(other) => Err(StorageError::Unavailable(format!(
+            "this database was written with schema version {other} and this binary writes \
+             {SCHEMA_VERSION}. There are no migrations: the schema is authoritative rather than \
+             historical. Point --database at a fresh one, or run the release that wrote it."
+        ))),
+    }
+}
 
 /// Why a storage operation failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

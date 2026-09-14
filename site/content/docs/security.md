@@ -133,6 +133,31 @@ $ openadr vtn \
 
 With TLS on, `GET /auth/server` and the mDNS record advertise `https://` rather than `http://`.
 
+## Credentials the VTN holds for somebody else
+
+A subscription carries a `bearerToken`: the credential the **subscriber** wants presented when the
+VTN calls their endpoint. The VTN does not own it and cannot derive it, so it is encrypted rather
+than hashed — the plaintext has to come back.
+
+```console
+$ openadr vtn --database ./openadr.sqlite --storage-key $(openssl rand -hex 32)
+```
+
+The key is 32 bytes, hex or base64. The token is then sealed with AES-256-GCM and a per-value nonce
+in **both** places it reaches disk: the subscription row, and the notification queue derived from it.
+
+Without a key it is stored as given, and the binary warns at start-up.
+
+| | |
+|---|---|
+| **Turning it on later** | Safe, no migration. Existing rows read back as they stand and are sealed the next time they are written. |
+| **Turning it off later** | Refused. A sealed row with no key is an error, never a pass-through. |
+| **Losing the key** | The subscriptions survive; their tokens do not. Re-create them. |
+| **In-memory storage** | Seals nothing — there is nothing at rest. |
+
+This is not a substitute for full-disk encryption. Disk encryption protects a stolen disk; this
+protects a backup, a read replica, and a support dump.
+
 ## Caching is a confidentiality question here
 
 Object privacy makes a response a function of the *reader*: two VENs are entitled to different
@@ -162,9 +187,9 @@ Stated plainly, because a reader who assumes otherwise will not configure it:
 - **Rate limiting**, per the above.
 - **Broker ACLs** must be pointed at the callback endpoints; the VTN answers them but cannot install
   them.
-- **Encryption at rest** for the secrets the VTN holds on behalf of clients — subscription
-  `bearerToken`s and webhook signing keys — is not implemented. Acceptable in memory; not acceptable
-  for a durable backend holding third-party credentials.
+- **A key-management service.** `--storage-key` takes the key; where it comes from, how it is
+  rotated and who may read it are yours. Rotation today means re-writing the subscriptions under the
+  new key, which is a `PUT` per subscription rather than a supported operation.
 - **Certification.** Nothing here has been through the Alliance test tool.
   [Status](@/docs/status.md) is the full list.
 

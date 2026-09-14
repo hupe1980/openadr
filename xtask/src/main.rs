@@ -7,6 +7,7 @@
 //! * `check-drift`— fail if the checked-in table no longer matches the specification
 //! * `check-model`— fail if the wire model no longer matches the OpenAPI document
 //! * `check-paths`— fail if the VTN's routes or their scopes no longer match it
+//! * `check-concepts` — fail if a `D`/`R`/`B` citation or a `concepts/` link does not resolve
 //!
 //! The payload table is the one place where a change upstream would otherwise pass unnoticed: a new
 //! payload type, or a tightened bound, would simply never be enforced. `check-drift` runs in CI.
@@ -22,6 +23,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_yaml_ng::Value;
 
+mod concepts;
 mod model;
 mod paths;
 mod trace;
@@ -56,6 +58,8 @@ fn main() -> Result<()> {
         "check-problems" => check_problems(),
         "check-suite" => check_suite(),
         "trace" => trace::run(&spec_dir(), &spec_version()?, &root()),
+        "check-concepts" => concepts::run(&root(), false),
+        "concepts-index" => concepts::run(&root(), true),
         other => {
             let usage = format!(
                 "cargo xtask <command>\n\n\
@@ -66,7 +70,9 @@ fn main() -> Result<()> {
                  check-paths     fail if the VTN's routes or scopes no longer match openadr3.yaml\n\
                  check-problems  fail if a problem.type URI resolves to nothing\n\
                  check-suite     fail if a Storage method or a written behaviour goes unexercised\n\
-                 trace           fail if a MUST or SHALL sits in a section nothing cites"
+                 trace           fail if a MUST or SHALL sits in a section nothing cites\n\
+                 check-concepts  fail if a D/R/B citation or a concepts link does not resolve\n\
+                 concepts-index  regenerate concepts/DECISIONS_INDEX.md"
             );
             // A misspelled check that exits 0 is a check nobody notices is gone — which is how
             // `check-links`, a command that never existed, spent a while being reported as passing.

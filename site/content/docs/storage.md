@@ -114,9 +114,20 @@ because its database was installed in another locale.
 
 ## Migrations
 
-There are none. The project is pre-release and the schema is authoritative rather than historical:
-it is applied on connect, and a change to it is a change to the file format. When the crate reaches
-1.0 that will change; until then, treat a schema change as a reason to recreate the database.
+There are none. The schema is authoritative rather than historical: it is applied on connect, and a
+change to it is a change to the file format. Treat a schema change as a reason to recreate the
+database.
+
+The database records which schema version wrote it, and a binary that writes a different one refuses
+to start rather than reading half of it:
+
+```text
+this database was written with schema version 2 and this binary writes 1. There are no
+migrations: the schema is authoritative rather than historical. Point --database at a fresh
+one, or run the release that wrote it.
+```
+
+A database carrying no version at all is adopted.
 
 On PostgreSQL the script runs under a transaction-scoped advisory lock, so several instances may
 start at once. `CREATE TABLE IF NOT EXISTS` reads as idempotent and is not: the check and the
@@ -127,6 +138,15 @@ rather than an edge one.
 
 SQLite is the single-binary deployment: one process, one file. A VEN on the same network can find
 it without being told a URL — see [Finding a local VTN](@/docs/discovery.md).
+
+## What is encrypted
+
+One field: a subscription's `bearerToken`, which belongs to the subscriber rather than to the VTN.
+`--storage-key` seals it with AES-256-GCM in both places it reaches disk — the `subscription` row's
+document and the `outbox` row the fan-out derives from it. Everything else is stored as written;
+object privacy is enforced on the read path, not by making rows unreadable.
+
+See [Security](@/docs/security.md#credentials-the-vtn-holds-for-somebody-else).
 
 ## One suite, three backends
 

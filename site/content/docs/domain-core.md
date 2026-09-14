@@ -187,8 +187,8 @@ places nothing in time at all.
 User Guide §7.5 works `startInterval` two ways in two examples: once as the first *covered*
 interval, once as the *generation point* with `numIntervals` counted backwards from it. The
 generation-point reading is implemented, because it is the one that makes both fully-specified
-examples work. `ScheduleOptions::start_interval_is_first_covered` selects the other for a deployment
-that has settled on it.
+examples work. There is no switch for the other: an ambiguity in the specification is resolved once
+here rather than handed to a caller.
 
 §7.5's rolling timeline also draws "generate report N" at the end of the range each report covers,
 in both directions, while §8.7 and §8.8 — the two complete worked forecast scenarios — say a

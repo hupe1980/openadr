@@ -23,7 +23,7 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use argon2::Argon2;
-use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::password_hash::{PasswordHasher, PasswordVerifier, phc::PasswordHash};
 use async_trait::async_trait;
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
@@ -145,14 +145,13 @@ impl InternalAuth {
     ///
     /// The result is a PHC string; feed it back to [`InternalAuthBuilder::client_hashed`].
     pub fn hash_secret(secret: &str) -> Result<String, AuthError> {
-        // The salt comes from the crate's own RNG rather than `password_hash`'s re-export, which
-        // pins an older `rand_core` than the rest of the build uses.
-        use rand::Rng as _;
-        let raw: [u8; 16] = rand::rng().random();
-        let salt =
-            SaltString::encode_b64(&raw).map_err(|e| AuthError::Unavailable(e.to_string()))?;
+        // `password_hash` 0.6 generates the salt itself, from `getrandom`. The previous version of
+        // this function drew sixteen bytes from `rand` and encoded them by hand, because the older
+        // crate's own re-export pinned an incompatible `rand_core` — a workaround for a dependency
+        // conflict that no longer exists, and one that put the salt's length and encoding in this
+        // file rather than in the crate whose format it is.
         Argon2::default()
-            .hash_password(secret.as_bytes(), &salt)
+            .hash_password(secret.as_bytes())
             .map(|h| h.to_string())
             .map_err(|e| AuthError::Unavailable(e.to_string()))
     }

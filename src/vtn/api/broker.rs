@@ -116,11 +116,6 @@ impl Decision {
             reason: Some(reason.into()),
         }
     }
-
-    /// Whether this permits.
-    pub fn is_allowed(&self) -> bool {
-        self.result == "allow"
-    }
 }
 
 impl IntoResponse for Decision {

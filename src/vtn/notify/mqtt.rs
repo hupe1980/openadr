@@ -12,45 +12,35 @@
 //!
 //! ## Confirming
 //!
-//! An outbox entry may be removed only once the notification is really gone. `AsyncClient::publish`
-//! returns as soon as the packet is queued *inside the client*, which is not that: a process that
-//! dies a millisecond later has deleted the row and published nothing — precisely the loss the
-//! outbox exists to prevent.
+//! An outbox entry may be removed only once the notification is really gone, so a QoS 1 publish
+//! resolves on its `PUBACK` and not before (D-057). That is [`crate::mqtt`]'s guarantee now rather
+//! than this module's: the caller allocates the packet identifier, registers a channel under it and
+//! writes, so correlation is a map lookup.
 //!
-//! So a QoS 1 publish waits for its `PUBACK`. The event loop runs in its own task and announces
-//! every packet it writes and every acknowledgement it reads, and a publish correlates itself
-//! against those two announcements.
-//!
-//! ## The lock covers the write, not the round trip
-//!
-//! Correlation needs one thing: that when the event loop reports "a publish packet went out with
-//! identifier *n*", the publisher reading it knows the packet is theirs. That is a property of the
-//! **queue-to-write** step — local, microseconds — not of the broker round trip, which is the part
-//! worth overlapping. So the lock covers `try_publish` and the wait for our own identifier, and is
-//! released before the acknowledgement: one publish is un-identified at a time, and as many are
-//! outstanding at the broker as the dispatcher allows. QoS 0 registers nothing at all.
-//!
-//! Serialising the round trip instead would make the time to clear a batch the *sum* of its publish
-//! timeouts — exactly what [`DispatchConfig::concurrency`](crate::vtn::DispatchConfig) exists to
-//! prevent, and how a batch comes to outlive its own lease (D-133, D-134).
-//!
-//! `try_publish` rather than `publish`: the async form waits on the client's own request queue, and
-//! waiting on it under this lock would deadlock against the event loop that drains it. A full queue
-//! is a retriable failure the dispatcher already knows how to back off from.
+//! This module is only the wire, because [`crate::mqtt`] owns the correlation. A transport that
+//! could not name the identifier it had just written would need a lock across the broker round
+//! trip, which makes the time to clear a batch the *sum* of its publish timeouts — the failure
+//! [`DispatchConfig`](crate::vtn::DispatchConfig)'s concurrency exists to prevent (D-133, D-134).
 
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
 use async_trait::async_trait;
-use rumqttc::{AsyncClient, Event, EventLoop, Incoming, MqttOptions, Outgoing, QoS};
-use tokio::sync::{Mutex, broadcast};
 
 use super::{Channel, Delivery, DeliveryFailure, Notifier};
+use crate::mqtt::{BrokerAddress, Connection, ConnectionConfig, Incoming, QoS};
+
+/// Re-exported so a caller handling a delivery failure need not reach into [`crate::mqtt`].
+pub use crate::mqtt::MqttError;
 
 /// How the publisher behaves.
 #[derive(Debug, Clone)]
 pub struct MqttConfig {
-    /// Broker URL: `mqtt://host:1883`, `mqtts://host:8883`, `ws://…` or `wss://…`.
+    /// Broker URL: `mqtt://host:1883` or `mqtts://host:8883`.
+    ///
+    /// `tcp://` and `ssl://` are accepted as the same two transports under other names. Anything
+    /// else is refused by name — the previous version of this line offered `ws://` and `wss://`,
+    /// which the URL parser one function away had always rejected.
     pub url: String,
     /// Client identifier presented to the broker. Must be unique per connection.
     pub client_id: String,
@@ -75,8 +65,6 @@ pub struct MqttConfig {
     pub qos: QoS,
     /// How long to wait for a `PUBACK` before treating the attempt as failed.
     pub publish_timeout: StdDuration,
-    /// Depth of the client's outgoing request queue.
-    pub queue_capacity: usize,
 }
 
 impl Default for MqttConfig {
@@ -90,7 +78,6 @@ impl Default for MqttConfig {
             retain: false,
             qos: QoS::AtLeastOnce,
             publish_timeout: StdDuration::from_secs(15),
-            queue_capacity: 128,
         }
     }
 }
@@ -128,84 +115,61 @@ impl MqttConfig {
     }
 }
 
-/// Why a publish did not happen.
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum MqttError {
-    /// The broker URL could not be understood.
-    #[error("invalid broker URL: {0}")]
-    Url(String),
-    /// The client could not hand the packet to its event loop.
-    #[error("could not queue the publish: {0}")]
-    Queue(String),
-    /// The broker did not acknowledge within the timeout.
-    #[error("the broker did not acknowledge the publish within {0:?}")]
-    Unacknowledged(StdDuration),
-    /// The connection dropped while the publish was outstanding.
-    #[error("the broker connection dropped: {0}")]
-    Disconnected(String),
-}
-
-impl MqttError {
-    /// Whether another attempt could plausibly succeed.
-    ///
-    /// Everything except a URL that does not parse: a broker that is down comes back, and a lost
-    /// connection is what the dispatcher's backoff is for.
-    pub fn is_retriable(&self) -> bool {
-        !matches!(self, MqttError::Url(_))
-    }
-}
-
-/// What the event-loop task tells the publisher.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Wire {
-    /// A publish packet was written to the socket, with this identifier.
-    Sent(u16),
-    /// The broker acknowledged the identifier.
-    Acked(u16),
-    /// The connection dropped; anything outstanding is lost.
-    Dropped,
-}
-
 /// Publishes notifications to the VTN's broker.
 ///
-/// Built by [`MqttNotifier::connect`], which also spawns the event loop. Dropping it disconnects.
+/// Built by [`MqttNotifier::connect`], which opens the connection. Dropping it disconnects.
 #[derive(Debug)]
 pub struct MqttNotifier {
-    client: AsyncClient,
+    connection: Arc<Connection>,
     config: MqttConfig,
-    wire: broadcast::Sender<Wire>,
-    /// One packet un-identified at a time, so the identifier the event loop reports is
-    /// unambiguously ours. Released before the acknowledgement is waited for; see the module note.
-    writing: Mutex<()>,
-    loop_task: tokio::task::JoinHandle<()>,
-}
-
-impl Drop for MqttNotifier {
-    fn drop(&mut self) {
-        self.loop_task.abort();
-    }
 }
 
 impl MqttNotifier {
-    /// Connect to the broker and start the event loop.
+    /// Connect to the broker.
     ///
-    /// Returns as soon as the connection is being established; `rumqttc` reconnects on its own, so
-    /// a broker that is not up yet delays deliveries rather than refusing to start the VTN.
+    /// Returns as soon as the connection task is spawned; it reconnects on its own, so a broker
+    /// that is not up yet delays deliveries rather than refusing to start the VTN.
     ///
-    /// Must be called from inside a Tokio runtime: the event loop is spawned, and nothing moves
-    /// without it — not even a publish that has already been queued.
+    /// Must be called from inside a Tokio runtime.
     pub fn connect(config: MqttConfig) -> Result<Arc<Self>, MqttError> {
-        let options = build_options(&config)?;
-        let (client, event_loop) = AsyncClient::new(options, config.queue_capacity);
-        let (wire, _) = broadcast::channel(config.queue_capacity.max(16) * 4);
-        let loop_task = tokio::spawn(run_event_loop(event_loop, wire.clone()));
-        Ok(Arc::new(Self {
-            client,
-            config,
-            wire,
-            writing: Mutex::new(()),
-            loop_task,
-        }))
+        let address = BrokerAddress::parse(&config.url)?;
+        // The publisher subscribes to nothing: it is the only party allowed to publish, and
+        // `/internal/mqtt/acl` refuses every subscription it would make (D-102).
+        let (events, mut incoming) = tokio::sync::mpsc::channel(32);
+        let connection = Connection::open(
+            address,
+            ConnectionConfig {
+                client_id: config.client_id.clone(),
+                username: config.username.clone(),
+                password: config.password.clone(),
+                keep_alive: config.keep_alive,
+                ack_timeout: config.publish_timeout,
+                ..Default::default()
+            },
+            Vec::new(),
+            events,
+        );
+        // Drained rather than dropped: a full channel would block the connection task, and the
+        // transitions are worth a log line an operator can correlate with a stalled outbox.
+        tokio::spawn(async move {
+            while let Some(event) = incoming.recv().await {
+                match event {
+                    Incoming::Connected(ack) => tracing::info!(
+                        session_present = ack.session_present,
+                        "connected to the MQTT broker"
+                    ),
+                    Incoming::Disconnected(why) => {
+                        tracing::warn!(reason = %why, "MQTT connection lost")
+                    }
+                    Incoming::Message { topic, .. } => {
+                        // The VTN subscribes to nothing, so this is the broker echoing or a
+                        // misconfigured shared client id — worth saying, without the payload.
+                        tracing::warn!(%topic, "the publisher received a message it never asked for")
+                    }
+                }
+            }
+        });
+        Ok(Arc::new(Self { connection, config }))
     }
 
     /// The broker URL this publisher is pointed at.
@@ -213,92 +177,26 @@ impl MqttNotifier {
         &self.config.url
     }
 
-    async fn publish(&self, topic: &str, payload: Vec<u8>) -> Result<(), MqttError> {
-        let deadline = tokio::time::Instant::now() + self.config.publish_timeout;
-
-        if self.config.qos == QoS::AtMostOnce {
-            // Nothing to correlate and nothing to wait for: QoS 0 has no acknowledgement, which is
-            // exactly what the deployment asked for when it chose it. No lock either — there is no
-            // identifier for a second publisher to be confused about.
-            return self
-                .client
-                .try_publish(topic, self.config.qos, self.config.retain, payload)
-                .map_err(|e| MqttError::Queue(e.to_string()));
-        }
-
-        // Phase one, under the lock: queue the packet and learn the identifier the event loop gave
-        // it. Nothing else may be between queueing and writing, or the identifier it reports would
-        // be somebody's guess.
-        let (pkid, mut events) = {
-            let _writing = self.writing.lock().await;
-            // Subscribed inside the lock, so the receiver cannot already hold a `Sent` belonging to
-            // a publish that went before us. It is carried into phase two rather than re-created,
-            // because a broker fast enough to acknowledge before the lock is released would
-            // otherwise be a broker whose acknowledgement is missed.
-            let mut events = self.wire.subscribe();
-
-            self.client
-                .try_publish(topic, self.config.qos, self.config.retain, payload)
-                .map_err(|e| MqttError::Queue(e.to_string()))?;
-
-            let pkid = wait_for(&mut events, deadline, |wire| match wire {
-                Wire::Sent(pkid) => Some(pkid),
-                _ => None,
-            })
-            .await?;
-            (pkid, events)
-        };
-
-        // Phase two, unlocked: the broker round trip. Every other delivery in the dispatcher's
-        // batch can be in this phase at the same time.
-        wait_for(&mut events, deadline, |wire| match wire {
-            Wire::Acked(acked) if acked == pkid => Some(()),
-            _ => None,
-        })
-        .await
+    /// Whether the broker connection is currently up.
+    ///
+    /// Advisory: a delivery attempted while this is false is queued and fails on the timeout, which
+    /// is what the dispatcher's backoff is for.
+    pub fn is_connected(&self) -> bool {
+        self.connection.is_connected()
     }
-}
 
-/// Watch the event loop until `want` recognises something, the connection drops, or time runs out.
-///
-/// One function for both phases of a publish, so that "the connection died" and "we fell behind our
-/// own event loop" cannot be handled one way while waiting for an identifier and another way while
-/// waiting for an acknowledgement.
-async fn wait_for<T>(
-    events: &mut broadcast::Receiver<Wire>,
-    deadline: tokio::time::Instant,
-    want: impl Fn(Wire) -> Option<T>,
-) -> Result<T, MqttError> {
-    let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-    tokio::time::timeout(remaining, async {
-        loop {
-            match events.recv().await {
-                Ok(wire) => {
-                    if let Wire::Dropped = wire {
-                        return Err(MqttError::Disconnected(
-                            "connection lost mid-publish".into(),
-                        ));
-                    }
-                    if let Some(found) = want(wire) {
-                        return Ok(found);
-                    }
-                }
-                // Falling behind the broadcast means an acknowledgement may have gone past unseen.
-                // Failing is the safe reading: a redelivery is a duplicate the receiver can
-                // recognise, a lost notification is not.
-                Err(broadcast::error::RecvError::Lagged(n)) => {
-                    return Err(MqttError::Disconnected(format!(
-                        "publisher fell {n} events behind its own event loop"
-                    )));
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    return Err(MqttError::Disconnected("event loop stopped".into()));
-                }
-            }
-        }
-    })
-    .await
-    .map_err(|_| MqttError::Unacknowledged(remaining))?
+    async fn publish(&self, topic: &str, payload: Vec<u8>) -> Result<(), MqttError> {
+        // One call. Every publish in the dispatcher's batch can be outstanding at once, because
+        // each carries its own identifier and its own channel — which is what `concurrency` was
+        // always supposed to buy (D-133).
+        tokio::time::timeout(
+            self.config.publish_timeout,
+            self.connection
+                .publish(topic, payload, self.config.qos, self.config.retain),
+        )
+        .await
+        .map_err(|_| MqttError::Timeout(self.config.publish_timeout))?
+    }
 }
 
 #[async_trait]
@@ -345,96 +243,62 @@ impl Notifier for MqttNotifier {
     }
 }
 
-/// Translate the configuration into `rumqttc`'s options.
-///
-/// The URL, the port defaults and the TLS provider are [`crate::mqtt`]'s, because the VEN's
-/// subscriber has to reach the same broker and a second parser is a second set of defaults.
-fn build_options(config: &MqttConfig) -> Result<MqttOptions, MqttError> {
-    let mut options =
-        crate::mqtt::broker_options(&config.url, &config.client_id, config.keep_alive)
-            .map_err(MqttError::Url)?;
-    if let Some(username) = &config.username {
-        options.set_credentials(
-            username.clone(),
-            config.password.clone().unwrap_or_default(),
-        );
-    }
-    Ok(options)
-}
-
-/// Drive the connection and announce what happens on it.
-///
-/// `rumqttc` requires the event loop to be polled for anything at all to move, including the
-/// packets a publish queues. Everything the publisher needs to know — which packet went out, which
-/// came back acknowledged, and when the connection died — is only visible here.
-async fn run_event_loop(mut event_loop: EventLoop, wire: broadcast::Sender<Wire>) {
-    loop {
-        match event_loop.poll().await {
-            Ok(Event::Outgoing(Outgoing::Publish(pkid))) => {
-                let _ = wire.send(Wire::Sent(pkid));
-            }
-            Ok(Event::Incoming(Incoming::PubAck(ack))) => {
-                let _ = wire.send(Wire::Acked(ack.pkid));
-            }
-            Ok(Event::Incoming(Incoming::ConnAck(_))) => {
-                tracing::info!("connected to the MQTT broker");
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, "MQTT connection error; reconnecting");
-                let _ = wire.send(Wire::Dropped);
-                // `rumqttc` reconnects on the next poll; pausing keeps a broker that is down from
-                // becoming a busy loop.
-                tokio::time::sleep(StdDuration::from_secs(1)).await;
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn broker_urls_pick_the_right_port_and_transport() {
-        let plain = build_options(&MqttConfig::new("mqtt://broker.example.com")).unwrap();
-        assert_eq!(plain.broker_address(), ("broker.example.com".into(), 1883));
-
-        let tls = build_options(&MqttConfig::new("mqtts://broker.example.com")).unwrap();
-        assert_eq!(tls.broker_address(), ("broker.example.com".into(), 8883));
-
-        let explicit = build_options(&MqttConfig::new("mqtt://broker.example.com:2883")).unwrap();
+        let plain =
+            BrokerAddress::parse(&MqttConfig::new("mqtt://broker.example.com").url).unwrap();
         assert_eq!(
-            explicit.broker_address(),
-            ("broker.example.com".into(), 2883)
+            (plain.host(), plain.port(), plain.is_tls()),
+            ("broker.example.com", 1883, false)
         );
+
+        let tls = BrokerAddress::parse(&MqttConfig::new("mqtts://broker.example.com").url).unwrap();
+        assert_eq!(
+            (tls.host(), tls.port(), tls.is_tls()),
+            ("broker.example.com", 8883, true)
+        );
+
+        let explicit =
+            BrokerAddress::parse(&MqttConfig::new("mqtt://broker.example.com:2883").url).unwrap();
+        assert_eq!(explicit.port(), 2883);
     }
 
     #[test]
     fn an_unusable_broker_url_is_refused_rather_than_retried() {
-        let err = build_options(&MqttConfig::new("https://broker.example.com")).unwrap_err();
+        let err = BrokerAddress::parse("https://broker.example.com").unwrap_err();
         assert!(matches!(err, MqttError::Url(_)));
         assert!(
             !err.is_retriable(),
             "no number of attempts turns https into mqtt"
         );
-        assert!(build_options(&MqttConfig::new("not a url")).is_err());
+        assert!(BrokerAddress::parse("not a url").is_err());
     }
 
     #[test]
     fn a_broker_that_is_down_is_worth_another_attempt() {
         assert!(MqttError::Disconnected("reset".into()).is_retriable());
-        assert!(MqttError::Unacknowledged(StdDuration::from_secs(1)).is_retriable());
-        assert!(MqttError::Queue("full".into()).is_retriable());
+        assert!(MqttError::Timeout(StdDuration::from_secs(1)).is_retriable());
+        // A refusal too: the commonest cause is a token that expired, and a VTN that gave up would
+        // need a restart to notice it had been renewed.
+        assert!(MqttError::Refused(5, "not authorized").is_retriable());
     }
 
     #[test]
-    fn credentials_reach_the_options() {
+    fn credentials_reach_the_connection_config() {
         let config =
             MqttConfig::new("mqtt://broker.example.com").with_credentials("ven-1", "token");
-        let options = build_options(&config).unwrap();
-        let login = options.credentials().expect("credentials were set");
-        assert_eq!(login.username, "ven-1");
-        assert_eq!(login.password, "token");
+        assert_eq!(config.username.as_deref(), Some("ven-1"));
+        assert_eq!(config.password.as_deref(), Some("token"));
+    }
+
+    #[test]
+    fn the_only_qualities_of_service_are_the_two_that_can_complete() {
+        // Two variants only: nothing here speaks QoS 2's handshake, so a third would be a
+        // setting whose publishes could only time out.
+        assert_eq!(MqttConfig::default().qos, QoS::AtLeastOnce);
     }
 }

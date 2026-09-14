@@ -22,6 +22,7 @@ OPTIONS:
     --public-url <URL>         how clients reach this VTN, for /auth/server
     --base-path <PATH>         mount point                [default: {}]
     --database <TARGET>        SQLite file path, or a postgres:// URL
+    --storage-key <KEY>        32-byte AES key (hex or base64) sealing subscriber credentials
     --payload-validation <P>   off | warn | strict        [default: warn]
     --no-cache                 disable ETag/If-None-Match
     --ephemeral                acknowledge in-memory storage on a public address
@@ -160,6 +161,17 @@ STORAGE:
     notification queue both scales across dispatchers and wakes them the instant a write commits.
     SQLite is the choice for a site controller or a single-tenant pilot — one binary, one file.
 
+    A subscription carries a `bearerToken` — a credential belonging to the *subscriber*, which the
+    VTN must be able to present when it calls their endpoint. Without --storage-key it is stored as
+    given, in the subscription row and in the notification queue, and it appears in every backup and
+    replica. With one it is sealed with AES-256-GCM and a per-value nonce:
+
+        openadr vtn --database ./openadr.sqlite --storage-key $(openssl rand -hex 32)
+
+    Turning it on against an existing database is safe and needs no migration: rows written before
+    it read back as they stand, and are sealed the next time they are written. Losing the key makes
+    the sealed credentials unrecoverable — the subscriptions survive, and their tokens do not.
+
     Without --database the VTN keeps everything in memory and loses it on restart. Binding a
     non-loopback address with in-memory storage requires --ephemeral, so that shipping a VTN that
     silently forgets its programmes has to be a deliberate act.
@@ -192,6 +204,7 @@ pub fn run_vtn(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut ephemeral = false;
     let mut webhooks = false;
     let mut webhook_key: Option<String> = None;
+    let mut storage_key: Option<Vec<u8>> = None;
     let mut webhook_allow_private = false;
     let mut breaker_threshold: Option<u32> = None;
     let mut breaker_cooldown: Option<u64> = None;
@@ -238,6 +251,7 @@ pub fn run_vtn(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "--payload-validation" => policy = value()?.parse()?,
             "--no-cache" => caching = false,
             "--database" => database = Some(value()?),
+            "--storage-key" => storage_key = Some(parse_storage_key(&value()?)?),
             "--ephemeral" => ephemeral = true,
             "--webhooks" => webhooks = true,
             "--webhook-key" => {
@@ -417,7 +431,7 @@ pub fn run_vtn(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             // `mut` only when a notifier can be attached, which is the `webhook` feature.
             #[cfg_attr(not(any(feature = "webhook", feature = "mqtt")), allow(unused_mut))]
             let mut builder = Vtn::builder()
-                .storage(storage.resolve().await?)
+                .storage(storage.resolve(storage_key).await?)
                 .authenticator(authenticator)
                 .config(config);
 
@@ -704,23 +718,82 @@ enum Backend {
 }
 
 impl Backend {
-    async fn resolve(self) -> Result<SharedStorage, Box<dyn std::error::Error>> {
+    async fn resolve(
+        self,
+        key: Option<Vec<u8>>,
+    ) -> Result<SharedStorage, Box<dyn std::error::Error>> {
+        // A durable backend holding a subscriber's credential in the clear is the thing B-32
+        // exists for, and an operator who has not chosen either way should be told once, loudly,
+        // rather than discovering it in a backup.
+        let durable = !matches!(self, Backend::Memory);
+        if durable && key.is_none() {
+            tracing::warn!(
+                "no --storage-key: subscription bearer tokens are stored as given. They are \
+                 credentials belonging to your subscribers, and they will appear in every backup \
+                 and replica of this database."
+            );
+        }
         match self {
-            Backend::Memory => Ok(MemoryStorage::shared()),
+            Backend::Memory => {
+                // Nothing to seal: an in-memory map is not at rest. Saying so is better than a
+                // flag that silently does nothing.
+                if key.is_some() {
+                    tracing::warn!(
+                        "--storage-key is ignored with in-memory storage, which never writes a row"
+                    );
+                }
+                Ok(MemoryStorage::shared())
+            }
             #[cfg(feature = "sqlite")]
             Backend::Sqlite(path) => {
-                let store = openadr::vtn::store::SqliteStorage::shared(&path).await?;
-                tracing::info!(%path, "using SQLite storage");
-                Ok(store)
+                let mut store = openadr::vtn::store::SqliteStorage::open(&path).await?;
+                if let Some(key) = &key {
+                    store = store.with_encryption_key(key)?;
+                }
+                tracing::info!(%path, sealed = key.is_some(), "using SQLite storage");
+                Ok(std::sync::Arc::new(store))
             }
             #[cfg(feature = "postgres")]
             Backend::Postgres(url) => {
-                let store = openadr::vtn::store::PostgresStorage::shared(&url).await?;
+                let mut store = openadr::vtn::store::PostgresStorage::open(&url).await?;
+                if let Some(key) = &key {
+                    store = store.with_encryption_key(key)?;
+                }
                 // The URL carries a password. Log that Postgres is in use, never with what.
-                tracing::info!("using PostgreSQL storage");
-                Ok(store)
+                tracing::info!(sealed = key.is_some(), "using PostgreSQL storage");
+                Ok(std::sync::Arc::new(store))
             }
         }
+    }
+}
+
+/// Read a 32-byte storage key from a hex or base64 string.
+///
+/// Both shapes, because an operator generating one reaches for `openssl rand -hex 32` or
+/// `-base64 32` and neither is more correct than the other. The length is checked here so the
+/// error names the real problem rather than surfacing as "storage unavailable".
+fn parse_storage_key(value: &str) -> Result<Vec<u8>, String> {
+    let value = value.trim();
+    let bytes = if value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        (0..64)
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&value[i..i + 2], 16))
+            .collect::<Result<Vec<u8>, _>>()
+            .map_err(|_| "--storage-key is not valid hex".to_string())?
+    } else {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(value)
+            .map_err(|_| {
+                "--storage-key must be 32 bytes as 64 hex characters or as base64".to_string()
+            })?
+    };
+    match bytes.len() {
+        32 => Ok(bytes),
+        n => Err(format!(
+            "--storage-key must decode to 32 bytes; got {n}. Generate one with \
+             `openssl rand -hex 32`."
+        )),
     }
 }
 
@@ -858,7 +931,61 @@ fn advertise(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_loopback, is_postgres_url};
+    use super::{is_loopback, is_postgres_url, parse_storage_key};
+
+    #[test]
+    fn a_storage_key_reads_in_either_shape_an_operator_generates() {
+        // `openssl rand -hex 32` and `openssl rand -base64 32`. Neither is more correct, so both
+        // are accepted rather than one being the documented shape and the other a puzzling error.
+        let hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+        assert_eq!(parse_storage_key(hex).unwrap().len(), 32);
+        assert!(
+            parse_storage_key("  ").is_err(),
+            "an empty key is not a key"
+        );
+
+        let b64 = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode([7u8; 32])
+        };
+        assert_eq!(parse_storage_key(&b64).unwrap(), vec![7u8; 32]);
+        // Surrounding whitespace, because the value usually arrives through a shell.
+        assert_eq!(
+            parse_storage_key(&format!("  {b64}\n")).unwrap(),
+            vec![7u8; 32]
+        );
+    }
+
+    #[test]
+    fn a_storage_key_of_the_wrong_length_says_so_and_says_how_to_make_one() {
+        // The failure an operator actually hits is a 16-byte key, and "storage unavailable" is not
+        // an answer to it.
+        let short = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode([1u8; 16])
+        };
+        let err = parse_storage_key(&short).unwrap_err();
+        assert!(err.contains("32 bytes"), "{err}");
+        assert!(err.contains("openssl rand -hex 32"), "{err}");
+    }
+
+    #[test]
+    fn a_sixty_four_character_non_hex_string_is_read_as_base64_not_refused() {
+        // The hex branch is chosen by shape, so a base64 value that happens to be 64 characters
+        // long must not fall into it and fail.
+        let b64 = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode([9u8; 32])
+        };
+        assert_eq!(b64.len(), 44);
+        // And a 64-char base64 string decodes to 48 bytes, which is refused by length, not by shape.
+        let long = {
+            use base64::Engine as _;
+            base64::engine::general_purpose::STANDARD.encode([9u8; 48])
+        };
+        assert_eq!(long.len(), 64);
+        assert!(parse_storage_key(&long).unwrap_err().contains("32 bytes"));
+    }
 
     #[test]
     fn a_retention_period_reads_the_way_an_operator_writes_one() {

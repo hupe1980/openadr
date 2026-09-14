@@ -82,7 +82,6 @@ pub enum ExpandError {
 #[derive(Debug, Clone)]
 pub struct IntervalExpander {
     now: Timestamp,
-    subdivide_multi_value: bool,
     limit: usize,
 }
 
@@ -97,7 +96,6 @@ impl IntervalExpander {
     pub fn at(now: Timestamp) -> Self {
         Self {
             now,
-            subdivide_multi_value: true,
             limit: Self::DEFAULT_LIMIT,
         }
     }
@@ -105,14 +103,6 @@ impl IntervalExpander {
     /// An expander reading the current time from a clock.
     pub fn new(clock: &dyn super::Clock) -> Self {
         Self::at(clock.now())
-    }
-
-    /// Turn off multi-value sub-interval splitting.
-    ///
-    /// With this off, an interval carrying three prices stays one interval with three values.
-    pub fn without_subdivision(mut self) -> Self {
-        self.subdivide_multi_value = false;
-        self
     }
 
     /// Change the safety limit.
@@ -351,16 +341,16 @@ impl IntervalExpander {
         end: Option<Timestamp>,
         randomize: Option<Duration>,
     ) -> Result<Vec<ExpandedInterval>, ExpandError> {
-        let count = if self.subdivide_multi_value {
-            interval
-                .payloads
-                .iter()
-                .map(schema::subinterval_count)
-                .max()
-                .unwrap_or(1)
-        } else {
-            1
-        };
+        // Subdivision is not optional. `[UG §7.3]` makes a scalar payload carrying several values
+        // *mean* that many sub-intervals, so an expander that skipped it would produce windows the
+        // specification does not describe — and the switch that used to offer that had no caller
+        // and no test (D-044).
+        let count = interval
+            .payloads
+            .iter()
+            .map(schema::subinterval_count)
+            .max()
+            .unwrap_or(1);
 
         let one = |payloads: Vec<crate::model::ValuesMap>,
                    subinterval: u32,

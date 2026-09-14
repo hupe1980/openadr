@@ -44,8 +44,9 @@ interval 1 — i.e. `startInterval` is the **generation point**, with `numInterv
 from it because `historical` defaults to true. The rolling-forecast example agrees with this reading.
 
 **We implement the generation-point reading**, which is the one that makes both fully-specified
-examples work. `ScheduleOptions::start_interval_is_first_covered` selects the other reading for a
-deployment that has settled on it.
+examples work. The subset example — `startInterval = 1`, `numIntervals = 3` — therefore covers
+intervals 0–1 here rather than 1–3, and it is the example that states neither `frequency` nor
+`repeat`.
 
 ### And `-1` points at a different end depending on direction
 

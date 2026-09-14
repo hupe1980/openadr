@@ -50,6 +50,10 @@ bounds what one dead endpoint costs.
 OpenADR 3.1 VTN, each citing the sentence it tests, with a skip that is never counted as a pass.
 Run against another implementation it found six required divergences there — and two defects here.
 
+**A subscriber's credential is not stored in the clear.** A subscription's `bearerToken` belongs to
+the subscriber, not to the VTN. `--storage-key` seals it with AES-256-GCM in both places it reaches
+disk: the subscription row, and the notification queue derived from it.
+
 **Money is decimal.** `Value::Number` holds a `rust_decimal::Decimal`, not an `f64`, so
 `0.1 + 0.2 == 0.3` holds exactly and a tariff round-trips through JSON unchanged.
 
@@ -70,7 +74,8 @@ latency and cannot cost it correctness.
 
 **It runs where the load is.** The wire model, payload schema and domain core are `no_std` + alloc
 and build for `thumbv7em-none-eabihf` and WebAssembly. No C *library* to install for any feature: no
-OpenSSL to find, no Avahi, nothing for `pkg-config` to locate.
+OpenSSL to find, no Avahi, nothing for `pkg-config` to locate. One crypto provider — `ring` — and
+`cargo deny` passes advisories, licences, banned crates and registries with **no exceptions**.
 
 ## Install
 
@@ -149,6 +154,7 @@ Authentication, storage, push transports and the operational endpoints each have
 | `discovery` | always (socket behind `mdns`) | finding a local VTN over mDNS/DNS-SD — advertising *and* browsing |
 | `client` | `client` | BL and VEN HTTP clients, role-checked at compile time |
 | `ven` | `ven` | the VEN loop: registration, conditional sync, timeline, report scheduling |
+| `mqtt` | `mqtt` | this crate's MQTT 3.1.1 client: a packet codec with no I/O, and one connection per task |
 | `ven::MqttPush` | `ven` + `mqtt` | subscribes to this VEN's topics and wakes the loop; never reads a payload |
 | `conformance` | `conformance` | a black-box suite that measures any VTN against the specification |
 | `vtn` | `vtn` | axum server: storage, auth, handlers, the notification outbox, caching, metrics |
@@ -192,7 +198,7 @@ Alliance test tool. MQTT 5, ACME, mapping a client certificate to a `clientID`, 
 webhook receiver on the VEN side are not written.
 [The full picture](https://hupe1980.github.io/openadr/docs/status/).
 
-**481 tests**, and the distribution is the point: most of the effort is at the seams. Seventy-one
+**526 tests**, and the distribution is the point: most of the effort is at the seams. Seventy-one
 drive the real HTTP router; the storage conformance suite is 57 behaviours run against all three
 backends; and the rest run against real servers rather than mocks — a real JWKS, a real Keycloak, a
 real MQTT broker that routes, real TLS handshakes, a real multicast group. Three further harnesses

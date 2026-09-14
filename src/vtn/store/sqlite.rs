@@ -34,12 +34,13 @@ use crate::model::{
 
 use super::outbox::support;
 use super::sql::{
-    cooldown_end, decode, encode, id, not_found, route_columns, route_from_columns, stamp, time,
+    cooldown_end, decode, decode_subscription, encode, encode_subscription, id, not_found,
+    route_columns, route_from_columns, stamp, time,
 };
 use super::{
     BreakerPolicy, DeadLetter, EventQuery, OutboxId, OutboxStats, OwnerKind, ProgramQuery, Queued,
-    ReportQuery, ReportStats, ResourceQuery, RetryPolicy, SharedStorage, Storage, StorageError,
-    Subscriber, SubscriberHealth, SubscriptionQuery, VenQuery, sequenced_id,
+    ReportQuery, ReportStats, ResourceQuery, RetryPolicy, Sealer, SharedStorage, Storage,
+    StorageError, Subscriber, SubscriberHealth, SubscriptionQuery, VenQuery, sequenced_id,
 };
 use crate::model::notification::AnyObject;
 use crate::vtn::notify::Delivery;
@@ -51,6 +52,14 @@ use crate::vtn::notify::Fanout;
 /// historical: there are no migrations to run, and a change here is a change to the file format.
 const SCHEMA: &str = r#"
 PRAGMA foreign_keys = ON;
+
+-- What shape these tables are. One row, checked at start-up: `CREATE TABLE IF NOT EXISTS` adds a
+-- missing table and never alters a present one, so without this a schema change half-applies in
+-- silence. See `SCHEMA_VERSION`.
+CREATE TABLE IF NOT EXISTS schema_version (
+    only_row INTEGER PRIMARY KEY CHECK (only_row = 1),
+    version  INTEGER NOT NULL
+) STRICT;
 
 CREATE TABLE IF NOT EXISTS program (
     id            TEXT PRIMARY KEY,
@@ -198,6 +207,9 @@ CREATE INDEX IF NOT EXISTS outbox_due ON outbox(next_attempt_at, lease_until);
 #[derive(Debug, Clone)]
 pub struct SqliteStorage {
     pool: SqlitePool,
+    /// Seals the credentials this VTN holds on a subscriber's behalf. [`Sealer::Plain`] by
+    /// default — durable storage without a key stores them as given, and `openadr vtn` warns.
+    sealer: Sealer,
 }
 
 impl SqliteStorage {
@@ -231,9 +243,20 @@ impl SqliteStorage {
             .await
             .map_err(|e| StorageError::Unavailable(e.to_string()))?;
 
-        let store = Self { pool };
+        let store = Self {
+            pool,
+            sealer: Sealer::plain(),
+        };
         store.apply_schema().await?;
         Ok(store)
+    }
+
+    /// Seal subscriber credentials at rest with a 32-byte key.
+    ///
+    /// See [`Sealer`]. Without one, a subscription's `bearerToken` is stored as given.
+    pub fn with_encryption_key(mut self, key: &[u8]) -> Result<Self, StorageError> {
+        self.sealer = Sealer::with_key(key)?;
+        Ok(self)
     }
 
     /// Open and wrap in an `Arc`, ready for [`crate::vtn::VtnBuilder::storage`].
@@ -248,6 +271,22 @@ impl SqliteStorage {
             .execute(&self.pool)
             .await
             .map_err(db)?;
+
+        // Read before writing: an existing database written by another release must be refused
+        // rather than stamped with this one's number.
+        let found: Option<i64> = sqlx::query_scalar("SELECT version FROM schema_version")
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(db)?;
+        super::check_schema_version(found)?;
+        sqlx::query(
+            "INSERT INTO schema_version (only_row, version) VALUES (1, ?1)
+             ON CONFLICT(only_row) DO UPDATE SET version = excluded.version",
+        )
+        .bind(super::SCHEMA_VERSION)
+        .execute(&self.pool)
+        .await
+        .map_err(db)?;
         Ok(())
     }
 
@@ -411,8 +450,15 @@ impl SqliteStorage {
         fanout: &Fanout,
         object: AnyObject,
         operation: Operation,
+        sealer: &Sealer,
     ) -> Result<(), StorageError> {
-        insert_deliveries(tx, &fanout.deliveries(&object, operation), fanout.now()).await
+        insert_deliveries(
+            tx,
+            &fanout.deliveries(&object, operation),
+            fanout.now(),
+            sealer,
+        )
+        .await
     }
 
     /// The objects a cascade is about to take with it.
@@ -616,6 +662,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Program(program.clone()),
             Operation::Create,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -649,7 +696,7 @@ impl Storage for SqliteStorage {
         }
         sql.push_str(" ORDER BY o.created_at, o.id LIMIT ? OFFSET ?");
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for target in &targets.binds {
             q = q.bind(target.as_str());
         }
@@ -712,6 +759,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Program(program.clone()),
             Operation::Update,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -755,13 +803,14 @@ impl Storage for SqliteStorage {
             .await
             .map_err(db)?;
         for object in cascaded {
-            Self::queue(&mut tx, fanout, object, Operation::Delete).await?;
+            Self::queue(&mut tx, fanout, object, Operation::Delete, &self.sealer).await?;
         }
         Self::queue(
             &mut tx,
             fanout,
             AnyObject::Program(program.clone()),
             Operation::Delete,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -813,6 +862,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Event(event.clone()),
             Operation::Create,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -850,7 +900,7 @@ impl Storage for SqliteStorage {
         }
         sql.push_str(" ORDER BY o.created_at, o.id LIMIT ? OFFSET ?");
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for target in &targets.binds {
             q = q.bind(target.as_str());
         }
@@ -925,6 +975,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Event(event.clone()),
             Operation::Update,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -954,13 +1005,14 @@ impl Storage for SqliteStorage {
             .await
             .map_err(db)?;
         for object in cascaded {
-            Self::queue(&mut tx, fanout, object, Operation::Delete).await?;
+            Self::queue(&mut tx, fanout, object, Operation::Delete, &self.sealer).await?;
         }
         Self::queue(
             &mut tx,
             fanout,
             AnyObject::Event(event.clone()),
             Operation::Delete,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1013,6 +1065,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Report(report.clone()),
             Operation::Create,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1058,7 +1111,7 @@ impl Storage for SqliteStorage {
         }
         sql.push_str(" ORDER BY o.created_at, o.id LIMIT ? OFFSET ?");
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(client) = &owner_bind {
             q = q.bind(client.as_str());
         }
@@ -1138,6 +1191,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Report(report.clone()),
             Operation::Update,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1161,6 +1215,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Report(report.clone()),
             Operation::Delete,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1190,7 +1245,7 @@ impl Storage for SqliteStorage {
         .bind(owner_kind.as_str())
         .bind(request.client_name.as_str())
         .bind(request.program_id.as_ref().map(|p| p.as_str()))
-        .bind(encode(&request)?)
+        .bind(encode_subscription(&request, &self.sealer)?)
         .execute(&mut *tx)
         .await
         .map_err(|e| match db(e) {
@@ -1225,6 +1280,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Subscription(subscription.clone()),
             Operation::Create,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1248,7 +1304,7 @@ impl Storage for SqliteStorage {
             object_type: ObjectType::Subscription,
             client_id: ClientId::new(client)
                 .map_err(|e| StorageError::Unavailable(e.to_string()))?,
-            content: decode(row.get(4))?,
+            content: decode_subscription(row.get(4), &self.sealer)?,
         })
     }
 
@@ -1276,7 +1332,7 @@ impl Storage for SqliteStorage {
         }
         sql.push_str(" ORDER BY o.created_at, o.id LIMIT ? OFFSET ?");
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(client) = &owner_bind {
             q = q.bind(client.as_str());
         }
@@ -1302,7 +1358,7 @@ impl Storage for SqliteStorage {
                     object_type: ObjectType::Subscription,
                     client_id: ClientId::new(client)
                         .map_err(|e| StorageError::Unavailable(e.to_string()))?,
-                    content: decode(row.get(4))?,
+                    content: decode_subscription(row.get(4), &self.sealer)?,
                 })
             })
             .collect()
@@ -1322,7 +1378,7 @@ impl Storage for SqliteStorage {
              WHERE s.subscription_id = o.id AND s.object_type IN ({placeholders})) \
              ORDER BY o.created_at, o.id"
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         for object_type in object_types {
             q = q.bind(object_type.as_str());
         }
@@ -1339,7 +1395,7 @@ impl Storage for SqliteStorage {
                         object_type: ObjectType::Subscription,
                         client_id: ClientId::new(client)
                             .map_err(|e| StorageError::Unavailable(e.to_string()))?,
-                        content: decode(row.get(5))?,
+                        content: decode_subscription(row.get(5), &self.sealer)?,
                     },
                     owner: OwnerKind::from_str_or_ven(&kind),
                 })
@@ -1370,7 +1426,7 @@ impl Storage for SqliteStorage {
         .bind(stamp(modified))
         .bind(request.client_name.as_str())
         .bind(request.program_id.as_ref().map(|p| p.as_str()))
-        .bind(encode(&request)?)
+        .bind(encode_subscription(&request, &self.sealer)?)
         .execute(&mut *tx)
         .await
         .map_err(|e| match db(e) {
@@ -1405,6 +1461,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Subscription(subscription.clone()),
             Operation::Update,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1433,6 +1490,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Subscription(subscription.clone()),
             Operation::Delete,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1469,6 +1527,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Ven(ven.clone()),
             Operation::Create,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1521,7 +1580,7 @@ impl Storage for SqliteStorage {
         }
         sql.push_str(" ORDER BY o.created_at, o.id LIMIT ? OFFSET ?");
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(client) = &owner_bind {
             q = q.bind(client.as_str());
         }
@@ -1593,6 +1652,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Ven(stored.clone()),
             Operation::Update,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1626,13 +1686,14 @@ impl Storage for SqliteStorage {
             .await
             .map_err(db)?;
         for object in cascaded {
-            Self::queue(&mut tx, fanout, object, Operation::Delete).await?;
+            Self::queue(&mut tx, fanout, object, Operation::Delete, &self.sealer).await?;
         }
         Self::queue(
             &mut tx,
             fanout,
             AnyObject::Ven(ven.clone()),
             Operation::Delete,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1676,6 +1737,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Resource(resource.clone()),
             Operation::Create,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1714,7 +1776,7 @@ impl Storage for SqliteStorage {
         }
         sql.push_str(" ORDER BY o.created_at, o.id LIMIT ? OFFSET ?");
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(client) = &owner_bind {
             q = q.bind(client.as_str());
         }
@@ -1790,6 +1852,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Resource(stored.clone()),
             Operation::Update,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1818,6 +1881,7 @@ impl Storage for SqliteStorage {
             fanout,
             AnyObject::Resource(resource.clone()),
             Operation::Delete,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1855,7 +1919,7 @@ impl Storage for SqliteStorage {
             return Ok(());
         }
         let mut tx = self.pool.begin().await.map_err(db)?;
-        insert_deliveries(&mut tx, &deliveries, now).await?;
+        insert_deliveries(&mut tx, &deliveries, now, &self.sealer).await?;
         tx.commit().await.map_err(db)?;
         Ok(())
     }
@@ -1907,7 +1971,7 @@ impl Storage for SqliteStorage {
                             ObjectId::new(s).map_err(|e| StorageError::Unavailable(e.to_string()))
                         })
                         .transpose()?,
-                    route: route_from_columns(row.get(3), row.get(4), row.get(5))?,
+                    route: route_from_columns(row.get(3), row.get(4), row.get(5), &self.sealer)?,
                     notification: decode(row.get(6))?,
                 },
             });
@@ -2242,6 +2306,7 @@ async fn insert_deliveries(
     tx: &mut sqlx::SqliteConnection,
     deliveries: &[Delivery],
     now: Timestamp,
+    sealer: &Sealer,
 ) -> Result<(), StorageError> {
     let stamped = stamp(now);
     for chunk in deliveries.chunks(INSERT_CHUNK) {
@@ -2252,18 +2317,18 @@ async fn insert_deliveries(
             "INSERT INTO outbox (enqueued_at, subscription_id, object_type, object_id, \
              callback_url, bearer_token, topic, notification, next_attempt_at) VALUES {values}"
         );
-        let mut query = sqlx::query(&statement);
+        let mut query = sqlx::query(sqlx::AssertSqlSafe(statement));
         for delivery in chunk {
             let (object_type, object_id) = support::subject(delivery);
-            let (callback_url, bearer_token, topic) = route_columns(&delivery.route);
+            let (callback_url, bearer_token, topic) = route_columns(&delivery.route, sealer)?;
             query = query
                 .bind(stamped.clone())
                 .bind(delivery.subscription_id.as_ref().map(|s| s.to_string()))
                 .bind(object_type.to_string())
                 .bind(object_id.to_string())
-                .bind(callback_url.map(str::to_string))
-                .bind(bearer_token.map(str::to_string))
-                .bind(topic.map(str::to_string))
+                .bind(callback_url)
+                .bind(bearer_token)
+                .bind(topic)
                 .bind(encode(&delivery.notification)?)
                 .bind(stamped.clone());
         }
@@ -2305,6 +2370,190 @@ mod tests {
         SqliteStorage::open(dir.join("openadr.sqlite").to_str().unwrap())
             .await
             .unwrap()
+    }
+
+    /// The credential a subscriber lends the VTN is ciphertext in the file.
+    ///
+    /// Asserted against the **raw column**, not through the trait. A round trip through `create`
+    /// and `get` would pass identically with no encryption at all — it is the one question the
+    /// storage suite cannot ask, because the suite's whole job is that the trait behaves the same
+    /// on every backend and this is a property of what reaches the disk (B-32).
+    #[tokio::test]
+    async fn a_subscribers_bearer_token_is_not_stored_in_the_clear() {
+        use crate::model::notification::{AnyObject, Notification};
+        use crate::model::{ClientName, ObjectOperation, ObjectType, SubscriptionRequest};
+        use crate::vtn::notify::{Delivery, Route};
+
+        const TOKEN: &str = "the-subscribers-own-credential";
+
+        let dir = std::env::temp_dir().join(format!(
+            "openadr-sealed-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = SqliteStorage::open(dir.join("openadr.sqlite").to_str().unwrap())
+            .await
+            .unwrap()
+            .with_encryption_key(&[3u8; 32])
+            .unwrap();
+
+        let request = SubscriptionRequest {
+            client_name: ClientName::new("subscriber").unwrap(),
+            program_id: None,
+            object_operations: vec![ObjectOperation {
+                objects: vec![ObjectType::Event],
+                operations: vec![Operation::Create],
+                callback_url: "https://example.com/hook".into(),
+                bearer_token: Some(TOKEN.into()),
+            }],
+            targets: Vec::new(),
+        };
+
+        let created = store
+            .create_subscription(
+                request,
+                ClientId::new("ven-1").unwrap(),
+                OwnerKind::Ven,
+                super::super::suite::now(),
+                &Fanout::none(),
+            )
+            .await
+            .unwrap();
+
+        // 1. What is on disk does not contain it.
+        let raw: String = sqlx::query_scalar(sqlx::AssertSqlSafe(
+            "SELECT doc FROM subscription WHERE id = ?1".to_string(),
+        ))
+        .bind(created.id.as_str())
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert!(
+            !raw.contains(TOKEN),
+            "the subscriber's credential is in the clear on disk: {raw}"
+        );
+        assert!(
+            raw.contains("enc:v1:"),
+            "and it is not sealed either: {raw}"
+        );
+
+        // 2. The owner still reads their own token back.
+        let read = store.get_subscription(&created.id).await.unwrap();
+        assert_eq!(
+            read.content.object_operations[0].bearer_token.as_deref(),
+            Some(TOKEN)
+        );
+
+        // 3. And the outbox — the *second* place it lands — is sealed too. A guarantee that covered
+        //    the subscription row and not the queue derived from it would be half of one.
+        let program = store
+            .create_program(
+                crate::model::ProgramRequest::new(
+                    crate::model::ProgramName::new("sealed").unwrap(),
+                ),
+                super::super::suite::now(),
+                &Fanout::none(),
+            )
+            .await
+            .unwrap();
+        let deliveries = vec![Delivery {
+            subscription_id: Some(created.id.clone()),
+            route: Route::Webhook {
+                callback_url: "https://example.com/hook".into(),
+                bearer_token: Some(TOKEN.into()),
+            },
+            notification: Notification::new(Operation::Create, AnyObject::Program(program)),
+        }];
+        let mut tx = store.pool.begin().await.unwrap();
+        insert_deliveries(
+            &mut tx,
+            &deliveries,
+            super::super::suite::now(),
+            &store.sealer,
+        )
+        .await
+        .unwrap();
+        tx.commit().await.unwrap();
+
+        let stored: String = sqlx::query_scalar(sqlx::AssertSqlSafe(
+            "SELECT bearer_token FROM outbox WHERE bearer_token IS NOT NULL LIMIT 1".to_string(),
+        ))
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_ne!(
+            stored, TOKEN,
+            "the outbox stores the credential in the clear"
+        );
+        assert!(stored.starts_with("enc:v1:"));
+
+        // 4. And the dispatcher gets the plaintext back, or nothing is deliverable.
+        let claimed = store
+            .claim_due(
+                super::super::suite::now(),
+                8,
+                core::time::Duration::from_secs(30),
+                "sealing-test",
+            )
+            .await
+            .unwrap();
+        let token = claimed.iter().find_map(|q| q.delivery.route.bearer_token());
+        assert_eq!(token, Some(TOKEN));
+    }
+
+    /// A database from another release is refused, not half-read.
+    ///
+    /// The defect this guards is silent: `CREATE TABLE IF NOT EXISTS` adds a missing table and
+    /// never alters a present one, so a release that changes a column leaves a database that is
+    /// half one shape and half another and fails at the first query that needs the new part.
+    /// Probed in both directions — an unstamped database is adopted, a foreign one is refused —
+    /// because a version check that cannot refuse is not one (D-072).
+    #[tokio::test]
+    async fn a_database_from_another_schema_version_is_refused_by_name() {
+        let dir = std::env::temp_dir().join(format!(
+            "openadr-schema-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("openadr.sqlite");
+        let url = path.to_str().unwrap();
+
+        // A database with no stamp at all is adopted: pre-release, nothing older exists.
+        assert!(super::super::check_schema_version(None).is_ok());
+
+        // Opening once stamps it, and opening again is fine.
+        let store = SqliteStorage::open(url).await.unwrap();
+        let stamped: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(
+            "SELECT version FROM schema_version".to_string(),
+        ))
+        .fetch_one(&store.pool)
+        .await
+        .unwrap();
+        assert_eq!(stamped, super::super::SCHEMA_VERSION);
+        drop(store);
+        SqliteStorage::open(url).await.expect("reopening is fine");
+
+        // Now claim it was written by a future release.
+        let store = SqliteStorage::open(url).await.unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(
+            "UPDATE schema_version SET version = 99".to_string(),
+        ))
+        .execute(&store.pool)
+        .await
+        .unwrap();
+        drop(store);
+
+        let err = SqliteStorage::open(url).await.unwrap_err().to_string();
+        assert!(err.contains("schema version 99"), "{err}");
+        assert!(err.contains("no migrations"), "{err}");
     }
 
     /// A cascade leaves no target rows behind.

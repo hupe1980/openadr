@@ -112,12 +112,17 @@ pub mod webhook;
 
 pub mod discovery;
 
-/// Broker connection options, shared by the VTN's publisher and the VEN's subscriber.
+/// This crate's MQTT 3.1.1 client, shared by the VTN's publisher and the VEN's subscriber.
+///
+/// Public because its types reach the public API — `QoS` is a field of
+/// [`MqttConfig`](vtn::notify::MqttConfig) — and because a third-party enum in that position made
+/// upgrading a dependency a breaking change to *this* crate, with one settable variant
+/// (`ExactlyOnce`) whose publishes could only ever time out.
 ///
 /// `mqtt` implies no role by design, so `--features mqtt` alone enables *neither* — and compiling
 /// this module then would be a module with no caller, which `-D warnings` rightly refuses.
 #[cfg(all(feature = "mqtt", any(feature = "vtn", feature = "ven")))]
-mod mqtt;
+pub mod mqtt;
 
 /// One `rustls` decision, shared by everything here that speaks TLS.
 #[cfg(any(

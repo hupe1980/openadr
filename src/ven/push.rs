@@ -47,11 +47,10 @@
 use std::sync::Arc;
 use std::time::Duration as StdDuration;
 
-use rumqttc::{AsyncClient, Event, Incoming, QoS};
-
 use super::{Meter, VenError, VenRuntime, Waker};
 use crate::client::{Client, VirtualEndNode};
 use crate::model::{MqttAuthentication, ObjectId};
+use crate::mqtt::{BrokerAddress, Connection, ConnectionConfig, Incoming, QoS};
 
 /// How the subscriber behaves.
 #[derive(Debug, Clone)]
@@ -64,12 +63,10 @@ pub struct MqttPushConfig {
     pub client_id: Option<String>,
     /// Keep-alive interval.
     pub keep_alive: StdDuration,
-    /// Pause after a connection error before the event loop is polled again.
+    /// Longest pause between reconnection attempts.
     ///
-    /// `rumqttc` reconnects on the next poll, so without this a broker that is down is a busy loop.
-    pub reconnect_delay: StdDuration,
-    /// Depth of the client's outgoing request queue.
-    pub queue_capacity: usize,
+    /// The transport backs off exponentially from 250 ms up to this.
+    pub max_backoff: StdDuration,
     /// Also subscribe to the VEN's programme topic.
     ///
     /// On by default: a programme's `intervalPeriod` and payload descriptors change how its events
@@ -87,8 +84,7 @@ impl Default for MqttPushConfig {
         Self {
             client_id: None,
             keep_alive: StdDuration::from_secs(30),
-            reconnect_delay: StdDuration::from_secs(1),
-            queue_capacity: 32,
+            max_backoff: StdDuration::from_secs(30),
             watch_programs: true,
             watch_own_objects: true,
         }
@@ -157,8 +153,8 @@ impl MqttPush {
             .client_id
             .clone()
             .unwrap_or_else(|| format!("openadr-ven-{ven_id}"));
-        let mut options = crate::mqtt::broker_options(&broker, &client_id, config.keep_alive)
-            .map_err(VenError::Protocol)?;
+        let address =
+            BrokerAddress::parse(&broker).map_err(|e| VenError::Protocol(e.to_string()))?;
 
         // `[Notifiers §12.2]`: the access token is the MQTT password. The VTN's authorization
         // callback then derives what may be subscribed to from the *username*, which is why it has
@@ -169,7 +165,7 @@ impl MqttPush {
         // The `{clientID}` placeholder is resolved by the binding itself
         // ([`MqttAuthentication::resolve_username`]), not restated here: it was written out twice
         // once, and a rule with two implementations has two chances to be wrong.
-        if matches!(
+        let (username, password) = if matches!(
             binding.authentication,
             MqttAuthentication::Oauth2BearerToken { .. }
         ) {
@@ -192,25 +188,39 @@ impl MqttPush {
                     )
                 })?
                 .to_string();
-            options.set_credentials(username, token);
-        }
+            (Some(username), Some(token))
+        } else {
+            (None, None)
+        };
 
-        let (mqtt, event_loop) = AsyncClient::new(options, config.queue_capacity);
-        for topic in &topics {
-            // QoS 1: the broker holds a notification that arrives while the VEN is disconnected,
-            // and a duplicate costs one conditional `GET`. A hint is idempotent, so the weaker
-            // guarantee buys nothing and the stronger one costs nothing.
-            mqtt.subscribe(topic.clone(), QoS::AtLeastOnce)
-                .await
-                .map_err(|e| VenError::Protocol(format!("could not subscribe: {e}")))?;
-        }
+        // QoS 1: the broker holds a notification that arrives while the VEN is disconnected, and a
+        // duplicate costs one conditional `GET`. A hint is idempotent, so the weaker guarantee buys
+        // nothing and the stronger one costs nothing.
+        let filters: Vec<(String, QoS)> = topics
+            .iter()
+            .map(|t| (t.clone(), QoS::AtLeastOnce))
+            .collect();
 
-        let task = tokio::spawn(run(
-            event_loop,
-            waker,
-            config.reconnect_delay,
-            Arc::new(mqtt),
-        ));
+        // The filters are handed to the connection rather than sent once, because the connection
+        // re-sends them on every reconnect where the broker did not restore the session. Subscribing
+        // once and trusting `cleanSession = 0` is a VEN that silently receives nothing for ever the
+        // first time its broker restarts.
+        let (events, incoming) = tokio::sync::mpsc::channel(32);
+        let connection = Connection::open(
+            address,
+            ConnectionConfig {
+                client_id,
+                username,
+                password,
+                keep_alive: config.keep_alive,
+                max_backoff: config.max_backoff,
+                ..Default::default()
+            },
+            filters,
+            events,
+        );
+
+        let task = tokio::spawn(run(incoming, waker, connection));
         tracing::info!(broker = %broker, topics = topics.len(), "subscribed to VTN notifications");
         Ok(Some(Self {
             topics,
@@ -277,32 +287,38 @@ impl MqttPush {
     }
 }
 
-/// Poll the connection and wake the runtime on every message that arrives.
+/// Wake the runtime on every message that arrives, and on every reconnect.
 ///
-/// The payload never leaves this function. It is not deserialised, not inspected and not logged at
-/// any level that would put a competitor's dispatch schedule in a log file.
+/// **The payload is deliberately not bound.** `Incoming::Message` carries it — the transport is a
+/// general MQTT client — and this function destructures the topic alone, so there is no name in
+/// scope holding a competitor's dispatch schedule and no level at which it could be logged. The
+/// object comes from the VTN on the conditional read the wake triggers (D-083).
+///
+/// The connection is held here so that dropping [`MqttPush`] — which aborts this task — is what
+/// closes the socket.
 async fn run(
-    mut event_loop: rumqttc::EventLoop,
+    mut incoming: tokio::sync::mpsc::Receiver<Incoming>,
     waker: Waker,
-    reconnect_delay: StdDuration,
-    _client: Arc<AsyncClient>,
+    connection: Arc<Connection>,
 ) {
-    loop {
-        match event_loop.poll().await {
-            Ok(Event::Incoming(Incoming::Publish(publish))) => {
-                tracing::debug!(topic = %publish.topic, "notification received; syncing early");
+    let _connection = connection;
+    while let Some(event) = incoming.recv().await {
+        match event {
+            Incoming::Message { topic, .. } => {
+                tracing::debug!(%topic, "notification received; syncing early");
                 waker.wake();
             }
-            Ok(Event::Incoming(Incoming::ConnAck(_))) => {
-                tracing::info!("connected to the MQTT broker");
+            Incoming::Connected(ack) => {
+                tracing::info!(
+                    session_present = ack.session_present,
+                    "connected to the MQTT broker"
+                );
                 // A reconnect may have missed messages the broker did not hold, so re-read once
                 // rather than wait for the poll interval `[Notifiers §16.2]`.
                 waker.wake();
             }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::warn!(error = %e, "MQTT connection error; reconnecting");
-                tokio::time::sleep(reconnect_delay).await;
+            Incoming::Disconnected(why) => {
+                tracing::warn!(reason = %why, "MQTT connection lost; reconnecting")
             }
         }
     }

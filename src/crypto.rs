@@ -3,8 +3,9 @@
 /// Install `ring` as this process's `rustls` crypto provider, once.
 ///
 /// `rustls` will not choose between compiled-in providers and will not run without one. This crate
-/// builds `reqwest` and `rumqttc` in their `…-no-provider` shapes — the alternative drags in
-/// `aws-lc-rs`, a second provider nothing calls — and names `ring` here instead `[D-112]`.
+/// builds `reqwest` in its `…-no-provider` shape — the alternative drags in `aws-lc-rs`, a second
+/// provider nothing calls — and names `ring` here instead `[D-112]`. `crate::mqtt` builds its TLS
+/// on the same provider by calling this, which is why there is one and not two.
 ///
 /// **Every TLS client and listener this crate builds calls this first**, so an ordinary user never
 /// has to. It is public for the case that is not ordinary: a program building its *own*

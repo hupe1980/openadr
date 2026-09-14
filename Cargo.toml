@@ -3,7 +3,7 @@ members = ["xtask"]
 resolver = "3"
 
 [workspace.package]
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0 OR MIT"
@@ -17,25 +17,11 @@ description = "OpenADR 3.1 in Rust: wire model, domain core, VTN server, VEN run
 categories = ["web-programming", "network-programming", "embedded"]
 keywords = ["openadr", "energy", "demand-response", "smart-grid", "vtn"]
 readme = "README.md"
-# What a `.crate` must not carry, stated here rather than left to `.gitignore`.
-#
-# `cargo package` normally takes its file list from git and so honours `.gitignore` — but only when
-# the working tree is in a state where it can, and a release is the one moment nobody wants that
-# qualifier. Two of these are not merely noise:
-#
-# * `specs/` is the OpenADR Alliance's publication set, fetched by `cargo xtask spec-sync` and
-#   deliberately *not* vendored. Republishing it under this crate's name is a redistribution this
-#   project has chosen not to make. (The OpenAPI document is the exception, transcoded into
-#   `src/vtn/openapi.json` with attribution, because the VTN serves it.)
-# * `concepts/` is internal design documentation. It is not part of the library.
-exclude = [
-    "specs/",
-    "concepts/",
-    "site/",
-    ".github/",
-    "scripts/",
-    "deploy/",
-]
+# `cargo package` takes its file list from git and so honours `.gitignore`, but only when the working
+# tree lets it — and a release is the one moment nobody wants that qualifier. `specs/` in particular
+# is the Alliance's publication set, fetched rather than vendored: republishing it under this crate's
+# name is a redistribution this project has chosen not to make.
+exclude = ["specs/", "concepts/", "site/", ".github/", "deploy/"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -48,10 +34,8 @@ authors.workspace = true
 default = ["std"]
 
 # --- foundation -------------------------------------------------------------
-# The crate is always `no_std` + `alloc`: the wire model is Strings and Vecs, so an allocator is
-# not optional and pretending otherwise made `--no-default-features` with nothing else a build
-# that could never work. `std` is the only foundation switch, and turning it off is the
-# microcontroller build.
+# The crate is always `no_std` + `alloc`: the wire model is Strings and Vecs, so an allocator is not
+# optional. `std` is the only foundation switch, and turning it off is the microcontroller build.
 std = [
     "serde/std",
     "serde_json/std",
@@ -89,10 +73,10 @@ vtn = [
 internal-auth = ["vtn", "dep:jsonwebtoken", "dep:argon2", "dep:rand"]
 # Durable storage. SQLite first: a site controller or a single-tenant pilot ships as one binary,
 # and that deployment has no competition.
-sqlite = ["vtn", "dep:sqlx", "sqlx/sqlite"]
+sqlite = ["vtn", "dep:sqlx", "sqlx/sqlite", "dep:ring"]
 # The cloud VTN. Postgres is where the outbox is actually good: `SELECT … FOR UPDATE SKIP LOCKED`
 # lets dispatchers scale, and `LISTEN`/`NOTIFY` wakes one the instant a write commits.
-postgres = ["vtn", "dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls-ring"]
+postgres = ["vtn", "dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls-ring", "dep:ring"]
 # The VTN validates tokens an external authorization server issued, against its JWKS.
 external-auth = ["vtn", "dep:jsonwebtoken", "dep:reqwest", "dep:rustls"]
 # The webhook signature scheme, on its own: `openadr::webhook`, `no_std`-capable, no HTTP stack.
@@ -100,12 +84,17 @@ external-auth = ["vtn", "dep:jsonwebtoken", "dep:reqwest", "dep:rustls"]
 # checking a signature should not have to compile an HTTP server to do it.
 webhook-signature = ["dep:hmac", "dep:sha2"]
 webhook = ["vtn", "webhook-signature", "dep:reqwest", "dep:rustls", "dep:rand", "dep:url"]
-# MQTT, both ends. 3.1 added push over a broker so a VEN behind a residential firewall can be
-# reached at all; without a publisher the topic endpoints describe a fan-out nothing performs, and
-# without a subscriber the crate ships one end of the release's headline feature. Like
-# `webhook-signature`, this implies no role: with `vtn` it is the publisher and the broker
-# callbacks, with `ven` it is the push receiver, and a VEN is not a server.
-mqtt = ["std", "dep:rumqttc", "dep:rustls", "dep:url"]
+# MQTT, both ends, over this crate's own 3.1.1 client. Implies no role: with `vtn` it is the
+# publisher and the broker callbacks, with `ven` it is the push receiver.
+mqtt = [
+    "std",
+    "dep:tokio",
+    "dep:tokio-rustls",
+    "dep:rustls",
+    "dep:webpki-roots",
+    "dep:url",
+    "dep:tracing",
+]
 # Serving the VTN over TLS, and optionally refusing a connection whose client certificate a named
 # CA did not issue. Without it the "one binary" deployment needs a reverse proxy to be reachable
 # over anything but plaintext, which is the one thing a site controller has no room for.
@@ -118,20 +107,20 @@ mdns = ["std", "dep:mdns-sd", "dep:tracing"]
 [dependencies]
 serde = { version = "1.0.228", default-features = false, features = ["derive", "rc", "alloc"] }
 serde_json = { version = "1.0.149", default-features = false, features = ["alloc"] }
-jiff = { version = "0.2.35", default-features = false, features = ["serde", "alloc"] }
+jiff = { version = "0.2.37", default-features = false, features = ["serde", "alloc"] }
 rust_decimal = { version = "1.43.0", default-features = false, features = ["serde"] }
 rust_decimal_macros = { version = "1.40.0", default-features = false }
 thiserror = { version = "2.0.18", default-features = false }
 
 # role dependencies (all optional)
 async-trait = { version = "0.1.89", optional = true }
-axum = { version = "0.8.8", optional = true }
+axum = { version = "0.8.9", optional = true }
 tower = { version = "0.5.3", optional = true, features = ["util"] }
-tower-http = { version = "0.6.8", optional = true, default-features = false, features = ["trace", "compression-gzip", "compression-br", "limit", "timeout", "request-id", "set-header"] }
+tower-http = { version = "0.7.1", optional = true, default-features = false, features = ["trace", "compression-gzip", "compression-br", "limit", "timeout", "request-id", "set-header"] }
 tokio = { version = "1.50.0", optional = true, features = ["rt-multi-thread", "macros", "signal", "sync", "time"] }
 tracing = { version = "0.1.44", optional = true }
 tracing-subscriber = { version = "0.3.23", optional = true, features = ["env-filter"] }
-uuid = { version = "1.22.0", optional = true, features = ["v7", "std"] }
+uuid = { version = "1.26.1", optional = true, features = ["v7", "std"] }
 http = { version = "1.4.0", optional = true }
 url = { version = "2.5.8", optional = true, features = ["serde"] }
 futures-util = { version = "0.3.32", optional = true, default-features = false, features = ["std"] }
@@ -140,26 +129,30 @@ futures-util = { version = "0.3.32", optional = true, default-features = false, 
 # is a large C and assembly dependency that nothing calls, a cross-compilation that needs a C
 # toolchain it should not, and the ambiguity that made `install_default` necessary in the first
 # place. The roots are the same either way.
-reqwest = { version = "0.12.24", optional = true, default-features = false, features = ["http2", "charset", "rustls-tls-webpki-roots-no-provider", "json"] }
+reqwest = { version = "0.13.5", optional = true, default-features = false, features = ["http2", "charset", "rustls-no-provider", "json", "form"] }
+# Held at 9.x. From 10.0 the crypto backend is a required choice between `aws_lc_rs`, which `[bans]`
+# refuses, and `rust_crypto`, a third implementation carrying RUSTSEC-2023-0071 against `rsa`. 9.x
+# links the `ring` that is in the tree regardless.
 jsonwebtoken = { version = "9.3.1", optional = true, default-features = false }
-argon2 = { version = "0.5.3", optional = true }
+argon2 = { version = "0.6.0", optional = true }
 rand = { version = "0.9.2", optional = true }
 hmac = { version = "0.12.1", optional = true, default-features = false }
 sha2 = { version = "0.10.9", optional = true, default-features = false }
 base64 = { version = "0.22.1", optional = true }
-sqlx = { version = "0.8.6", optional = true, default-features = false, features = ["runtime-tokio"] }
-# `use-rustls-no-provider` for the same reason as `reqwest` above: `use-rustls` turns on
-# `tokio-rustls`' defaults, which is `aws-lc-rs`, and this crate installs `ring`.
-rumqttc = { version = "0.25.1", optional = true, default-features = false, features = ["use-rustls-no-provider"] }
+sqlx = { version = "0.9.0", optional = true, default-features = false, features = ["runtime-tokio"] }
 # Pure Rust, no async runtime of its own, and no C toolchain — which is the whole reason the VEN
 # side of this crate can be cross-compiled at all.
-mdns-sd = { version = "0.21.1", optional = true, default-features = false }
-# Not used directly beyond one call: `rustls` refuses to guess a crypto provider when more than one
-# is compiled in, and this dependency tree has both (`reqwest` brings ring, `tokio-rustls` defaults
-# to aws-lc-rs). Naming ring explicitly turns a start-up panic into a decision.
-rustls = { version = "0.23.43", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
-# The VTN's own TLS listener. `axum::serve` cannot carry a peer certificate into the request it
-# precedes, so the accept loop is written out and these are what it needs.
+mdns-sd = { version = "0.21.3", optional = true, default-features = false }
+# AES-256-GCM for encrypting stored subscriber credentials; only the SQL backends need it. Already
+# linked by `rustls` and `jsonwebtoken`, so naming it directly adds no code to the binary.
+ring = { version = "0.17.14", optional = true }
+rustls = { version = "0.23.44", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+# Root certificates for the MQTT client's TLS. `reqwest` already carries this set for HTTPS; naming
+# it here is what lets `--features mqtt` build without `client`.
+webpki-roots = { version = "1.0.9", optional = true }
+# The VTN's own TLS listener, and the MQTT client's transport. `axum::serve` cannot carry a peer
+# certificate into the request it precedes, so the accept loop is written out and these are what it
+# needs.
 tokio-rustls = { version = "0.26.5", optional = true, default-features = false, features = ["ring", "tls12", "logging"] }
 hyper = { version = "1.11.1", optional = true, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1.20", optional = true, features = ["server-auto", "tokio"] }

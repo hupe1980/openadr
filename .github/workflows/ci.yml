@@ -65,6 +65,10 @@ jobs:
       - name: Test
         run: cargo test --workspace --all-features
 
+      # `cargo xtask check-concepts` deliberately does NOT run in CI. `concepts/` is gitignored, so a
+      # checkout has no documents to check and the step would report success against an empty
+      # directory for ever — D-120's defect exactly: a check that never ran and said it passed.
+      # It is a local command, and R-020 records what follows from those documents being untracked.
       - name: Docs
         run: cargo doc --no-deps --all-features
         env:

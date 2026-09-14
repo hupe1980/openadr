@@ -305,6 +305,49 @@ async fn registering_twice_produces_one_ven_and_one_set_of_resources() {
 }
 
 #[tokio::test]
+async fn a_gateway_that_discovers_an_appliance_registers_it_without_restarting() {
+    // `sync_resources` was public, documented for exactly this, and had no caller and no test —
+    // and the case it described was unreachable, because the wanted set lived in a configuration
+    // consumed at construction (D-144). Both halves are covered here: the method now has a caller,
+    // and the caller can express the case.
+    let fixture = Fixture::start().await;
+    let ven = fixture.ven(
+        VenConfig::new("gateway-7".parse().unwrap())
+            .with_resources([ResourceName::new("heat-pump").unwrap()]),
+    );
+    ven.register().await.unwrap();
+    assert_eq!(ven.resources().len(), 1);
+
+    // A second appliance appears on the bus behind the gateway, hours later.
+    ven.add_resource(ResourceName::new("wallbox").unwrap())
+        .await
+        .unwrap();
+
+    let names: Vec<_> = ven.resources().keys().map(|n| n.to_string()).collect();
+    assert_eq!(names, ["heat-pump", "wallbox"]);
+
+    let remote = fixture.bl("GET", "/resources", None).await;
+    let remote: Vec<String> = remote
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["resourceName"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(
+        remote.len(),
+        2,
+        "the VTN did not learn about the discovered appliance: {remote:?}"
+    );
+
+    // Idempotent: the same discovery reported twice creates nothing.
+    ven.add_resource(ResourceName::new("wallbox").unwrap())
+        .await
+        .unwrap();
+    let again = fixture.bl("GET", "/resources", None).await;
+    assert_eq!(again.as_array().unwrap().len(), 2);
+}
+
+#[tokio::test]
 async fn a_ven_sees_only_what_it_was_granted_and_notices_a_cancellation() {
     let fixture = Fixture::start().await;
     let program = fixture.program("grid-aware-charging").await;

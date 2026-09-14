@@ -18,8 +18,11 @@
 //! `numIntervals = 2`, `frequency = 2`, `repeat = 3`) and the rolling example both show
 //! `startInterval` as the *generation point*, with `numIntervals` counted backwards from it when
 //! `historical` is true. The latter reading is the one that makes all the fully-specified examples
-//! work, and it is the default here.
-//! [`ScheduleOptions::start_interval_is_first_covered`] selects the other.
+//! work, and it is the one implemented (D-012).
+//!
+//! There is no switch for the other reading. An ambiguity in a specification is resolved once, with
+//! the evidence written down, rather than forked through the three hardest branches in this module
+//! and handed to a caller who has less information than whoever read both examples.
 //!
 //! **When a forecast is generated.** §7.5's rolling timeline draws "generate report N" at the end
 //! of the range each report covers, in both directions. §8.7 and §8.8 — the two complete worked
@@ -64,8 +67,6 @@ pub struct ReportDue {
 /// Knobs for the ambiguous corners of §7.5.
 #[derive(Debug, Clone, Copy)]
 pub struct ScheduleOptions {
-    /// Read `startInterval` as the first *covered* interval rather than the generation point.
-    pub start_interval_is_first_covered: bool,
     /// Ceiling on how many reports one computation may return.
     ///
     /// `repeat = -1` is unbounded by construction, so the window a schedule is computed over is
@@ -85,7 +86,6 @@ pub struct ScheduleOptions {
 impl Default for ScheduleOptions {
     fn default() -> Self {
         Self {
-            start_interval_is_first_covered: false,
             max_reports: 1_000,
             max_intervals: super::IntervalExpander::DEFAULT_LIMIT,
         }
@@ -161,9 +161,7 @@ impl ReportSchedule {
         // Where the schedule anchors. `-1` means "the far end, in the direction the report runs":
         // the last interval for a historical report, the first for a forecast.
         let anchor0 = if descriptor.start_interval < 0 {
-            if options.start_interval_is_first_covered {
-                (declared - num).max(0)
-            } else if descriptor.historical {
+            if descriptor.historical {
                 declared - 1
             } else {
                 0
@@ -203,11 +201,10 @@ impl ReportSchedule {
             let anchor = anchor0.saturating_add((k as i64).saturating_mul(step));
 
             // Which intervals this report covers, and which of them it anchors on.
-            let (first, last) = if options.start_interval_is_first_covered || !descriptor.historical
-            {
-                (anchor, anchor.saturating_add(num).saturating_sub(1))
-            } else {
+            let (first, last) = if descriptor.historical {
                 (anchor.saturating_sub(num).saturating_add(1), anchor)
+            } else {
+                (anchor, anchor.saturating_add(num).saturating_sub(1))
             };
             let first = first.max(0);
             if bounded && first >= declared {
@@ -234,7 +231,7 @@ impl ReportSchedule {
 
             // A report is due at the boundary of the interval it anchors on: the end of it when
             // reporting backwards, the start of it when reporting forwards.
-            let due_at = if descriptor.historical && !options.start_interval_is_first_covered {
+            let due_at = if descriptor.historical {
                 covers_to
             } else {
                 Some(covers_from)
@@ -848,23 +845,25 @@ mod tests {
     }
 
     #[test]
-    fn the_alternative_reading_of_start_interval_is_available() {
-        // §7.5 "Report on a subset of intervals": start=1, num=3, read as "first covered".
+    fn the_subset_example_is_the_one_that_disagrees_with_the_reading_kept() {
+        // §7.5 "Report on a subset of intervals" — `startInterval = 1`, `numIntervals = 3` — draws
+        // a report covering intervals 1-3, which is `startInterval` as the *first covered* one.
+        //
+        // Under the reading implemented here it anchors on interval 1 and counts three backwards,
+        // clamped at zero: intervals 0-1. That is a real divergence from that diagram and it is
+        // asserted rather than hidden, because the alternative was a flag nothing set (D-044) that
+        // forked the three hardest branches in this module.
+        //
+        // The reading is kept because the other three §7.5 scenarios are fully specified — they
+        // state `frequency` and `repeat`, so every report in the series is drawn — and all three
+        // only work as generation points. This one states neither, so it is the example with the
+        // least information and the one that loses (D-012).
         let mut rd = descriptor();
         rd.start_interval = 1;
         rd.num_intervals = 3;
-        let (from, to) = everything();
-        let s = ReportSchedule::compute_with(
-            &rd,
-            &hourly(5),
-            from,
-            to,
-            ScheduleOptions {
-                start_interval_is_first_covered: true,
-                ..Default::default()
-            },
-        );
-        assert_eq!(s.due()[0].interval_ids, vec![1, 2, 3]);
+        let s = schedule(&rd, &hourly(5));
+        assert!(rd.historical, "the default descriptor reports backwards");
+        assert_eq!(s.due()[0].interval_ids, vec![0, 1]);
     }
 
     #[test]

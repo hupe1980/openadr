@@ -18,11 +18,11 @@
 
 use std::time::Duration;
 
+use openadr::mqtt::{BrokerAddress, Connection, ConnectionConfig, Incoming, QoS};
 use openadr::{
     client::{BusinessLogic, Client},
     model::{BlVenRequest, EventRequest, Interval, IntervalPeriod, ProgramRequest, VenRequest},
 };
-use rumqttc::{AsyncClient, ConnectionError, Event, MqttOptions, Packet, QoS};
 use testcontainers::compose::DockerCompose;
 
 const BL_TOKEN: &str = "bl-secret";
@@ -172,11 +172,38 @@ impl Stack {
 
     /// An MQTT connection, as a VEN presents one: the `clientID` as the username, the access token
     /// as the password. `emqx.conf` sends both to `POST /internal/mqtt/auth`.
-    fn mqtt(&self, id: &str, username: &str, password: &str) -> (AsyncClient, rumqttc::EventLoop) {
-        let mut options = MqttOptions::new(id, &self.broker_host, self.broker_port);
-        options.set_credentials(username, password);
-        options.set_keep_alive(Duration::from_secs(30));
-        AsyncClient::new(options, 32)
+    ///
+    /// This is **this crate's own client** rather than a second one. Against a real broker that is
+    /// the point: the codec, the `CONNACK` reading, the `SUBACK` codes and the re-subscribe are the
+    /// code a deployment runs, and a test that proved a different client could talk to EMQX would
+    /// prove nothing about this one.
+    fn mqtt(
+        &self,
+        id: &str,
+        username: &str,
+        password: &str,
+        subscriptions: Vec<(String, QoS)>,
+    ) -> (
+        std::sync::Arc<Connection>,
+        tokio::sync::mpsc::Receiver<Incoming>,
+    ) {
+        let address =
+            BrokerAddress::parse(&format!("mqtt://{}:{}", self.broker_host, self.broker_port))
+                .expect("the broker URL parses");
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        let connection = Connection::open(
+            address,
+            ConnectionConfig {
+                client_id: id.to_string(),
+                username: Some(username.to_string()),
+                password: Some(password.to_string()),
+                keep_alive: Duration::from_secs(30),
+                ..Default::default()
+            },
+            subscriptions,
+            tx,
+        );
+        (connection, rx)
     }
 }
 
@@ -186,22 +213,16 @@ impl Stack {
 /// afterwards — which matters because readiness asks it up to ninety times, and a version of this
 /// that left a live client behind each time left ninety of them reconnecting in the background.
 async fn connect_result(stack: &Stack, id: &str, username: &str, password: &str) -> Option<String> {
-    let (_client, mut loop_) = stack.mqtt(id, username, password);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        return match tokio::time::timeout_at(deadline, loop_.poll()).await {
-            Ok(Ok(Event::Incoming(Packet::ConnAck(ack)))) => {
-                match ack.code == rumqttc::ConnectReturnCode::Success {
-                    true => None,
-                    false => Some(format!("{:?}", ack.code)),
-                }
-            }
-            Ok(Err(ConnectionError::ConnectionRefused(code))) => Some(format!("{code:?}")),
-            Ok(Err(e)) => Some(e.to_string()),
-            Err(_) => Some("the broker did not answer CONNECT within 20s".to_string()),
-            // Anything else on the way to the acknowledgement.
-            Ok(Ok(_)) => continue,
-        };
+    let (_connection, mut events) = stack.mqtt(id, username, password, Vec::new());
+    match tokio::time::timeout(Duration::from_secs(20), events.recv()).await {
+        Ok(Some(Incoming::Connected(ack))) if ack.is_accepted() => None,
+        Ok(Some(Incoming::Connected(ack))) => Some(ack.reason().to_string()),
+        // A refusal reaches the caller as a disconnect carrying the broker's own reason, which is
+        // what `MqttError::Refused` renders.
+        Ok(Some(Incoming::Disconnected(why))) => Some(why),
+        Ok(Some(Incoming::Message { .. })) => Some("a message before a CONNACK".to_string()),
+        Ok(None) => Some("the connection task stopped".to_string()),
+        Err(_) => Some("the broker did not answer CONNECT within 20s".to_string()),
     }
 }
 
@@ -220,28 +241,31 @@ async fn subscribe_result(
     password: &str,
     filter: &str,
 ) -> Result<(), String> {
-    let (client, mut loop_) = stack.mqtt(id, username, password);
-    client
-        .subscribe(filter, QoS::AtLeastOnce)
-        .await
-        .map_err(|e| e.to_string())?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        return match tokio::time::timeout_at(deadline, loop_.poll()).await {
-            Ok(Ok(Event::Incoming(Packet::SubAck(ack)))) => {
-                match ack
-                    .return_codes
-                    .iter()
-                    .all(|c| !matches!(c, rumqttc::SubscribeReasonCode::Failure))
-                {
-                    true => Ok(()),
-                    false => Err(format!("{:?}", ack.return_codes)),
-                }
-            }
-            Ok(Err(e)) => Err(e.to_string()),
-            Err(_) => Err("the broker neither granted nor refused within 20s".to_string()),
-            Ok(Ok(_)) => continue,
-        };
+    let (connection, mut events) = stack.mqtt(id, username, password, Vec::new());
+    // Wait for the connection before asking, so a refusal is the broker's answer to the *filter*
+    // rather than to the credential.
+    match tokio::time::timeout(Duration::from_secs(20), events.recv()).await {
+        Ok(Some(Incoming::Connected(ack))) if ack.is_accepted() => {}
+        Ok(Some(Incoming::Connected(ack))) => return Err(ack.reason().to_string()),
+        Ok(Some(Incoming::Disconnected(why))) => return Err(why),
+        Ok(_) => return Err("no CONNACK".to_string()),
+        Err(_) => return Err("the broker did not answer CONNECT within 20s".to_string()),
+    }
+
+    let codes = tokio::time::timeout(
+        Duration::from_secs(20),
+        connection.subscribe(vec![(filter.to_string(), QoS::AtLeastOnce)]),
+    )
+    .await
+    .map_err(|_| "the broker neither granted nor refused within 20s".to_string())?
+    // With EMQX's `deny_action = disconnect` a refusal closes the connection rather than answering,
+    // which reaches us as an error. Both are the broker enforcing the VTN's decision.
+    .map_err(|e| e.to_string())?;
+
+    // `0x80` is the failure code `[MQTT 3.1.1 §3.9.3]`.
+    match codes.contains(&0x80) {
+        true => Err(format!("SUBACK refused: {codes:?}")),
+        false => Ok(()),
     }
 }
 
@@ -250,13 +274,18 @@ async fn subscribe_result(
 /// The subscription is confirmed before the caller publishes anything, so "nothing arrived" cannot
 /// mean "the subscription had not landed yet". That is the difference between this and a `sleep`.
 struct Subscriber {
-    _client: AsyncClient,
-    events: tokio::sync::mpsc::UnboundedReceiver<(String, Vec<u8>)>,
+    _connection: std::sync::Arc<Connection>,
+    events: tokio::sync::mpsc::Receiver<Incoming>,
 }
 
 impl Subscriber {
     /// Connect and subscribe. The caller has already established that this credential is accepted —
     /// [`connect_result`] is the question, this is the consequence.
+    ///
+    /// The filter is handed to the connection, which sends it on connect and re-sends it on any
+    /// reconnect the broker did not restore a session for. Waiting for `Connected` before returning
+    /// is what makes "nothing arrived" mean the fan-out published nothing, rather than that the
+    /// subscription had not landed yet — the difference between this and a `sleep`.
     async fn connect(
         stack: &Stack,
         id: &str,
@@ -264,40 +293,20 @@ impl Subscriber {
         password: &str,
         filter: &str,
     ) -> Self {
-        let (client, mut loop_) = stack.mqtt(id, username, password);
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-
-        client
-            .subscribe(filter, QoS::AtLeastOnce)
-            .await
-            .expect("the subscribe request is sent");
-        // Wait for the SubAck, so the broker holds the filter before anything is published.
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-        let mut subscribed = false;
-        while let Ok(Ok(event)) = tokio::time::timeout_at(deadline, loop_.poll()).await {
-            if matches!(event, Event::Incoming(Packet::SubAck(_))) {
-                subscribed = true;
-                break;
-            }
-        }
-        assert!(
-            subscribed,
-            "the broker never acknowledged a subscription to {filter}"
+        let (connection, mut events) = stack.mqtt(
+            id,
+            username,
+            password,
+            vec![(filter.to_string(), QoS::AtLeastOnce)],
         );
-
-        tokio::spawn(async move {
-            while let Ok(event) = loop_.poll().await {
-                if let Event::Incoming(Packet::Publish(p)) = event
-                    && tx.send((p.topic.clone(), p.payload.to_vec())).is_err()
-                {
-                    return;
-                }
-            }
-        });
-
+        let connected = tokio::time::timeout(Duration::from_secs(20), events.recv()).await;
+        assert!(
+            matches!(connected, Ok(Some(Incoming::Connected(ack))) if ack.is_accepted()),
+            "the broker never accepted a connection for {filter}: {connected:?}"
+        );
         Self {
-            _client: client,
-            events: rx,
+            _connection: connection,
+            events,
         }
     }
 
@@ -306,13 +315,20 @@ impl Subscriber {
     /// The negative checks depend on this bound, so it is generous: a false "nothing arrived" is a
     /// privacy claim that is not true.
     async fn next(&mut self, patience: Duration) -> Option<(String, serde_json::Value)> {
-        let (topic, payload) = tokio::time::timeout(patience, self.events.recv())
-            .await
-            .ok()??;
-        Some((
-            topic,
-            serde_json::from_slice(&payload).unwrap_or(serde_json::Value::Null),
-        ))
+        let deadline = tokio::time::Instant::now() + patience;
+        loop {
+            match tokio::time::timeout_at(deadline, self.events.recv()).await {
+                Ok(Some(Incoming::Message { topic, payload })) => {
+                    return Some((
+                        topic,
+                        serde_json::from_slice(&payload).unwrap_or(serde_json::Value::Null),
+                    ));
+                }
+                // Reconnects are not messages; keep waiting for one.
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => return None,
+            }
+        }
     }
 }
 
@@ -468,16 +484,21 @@ async fn object_privacy_holds_across_a_real_broker() {
     println!("ok   the broker kept one VEN out of another's private topic");
 
     // 4. A VEN's forged publish reaches nobody.
-    let (forger, mut forger_loop) = stack.mqtt("forger", VEN_CLIENT, VEN_TOKEN);
-    tokio::spawn(async move { while forger_loop.poll().await.is_ok() {} });
-    let _ = forger
-        .publish(
-            format!("{PREFIX}/events/vens/{ven_a}/create"),
+    let (forger, _forger_events) = stack.mqtt("forger", VEN_CLIENT, VEN_TOKEN, Vec::new());
+    // Ignored deliberately: `/internal/mqtt/acl` refuses every publish it has not been told about,
+    // and EMQX may answer by closing the connection rather than by staying silent. Either way the
+    // assertion is about what the *subscriber* receives, which is the only observation that
+    // distinguishes "refused" from "delivered to nobody in particular".
+    let _ = tokio::time::timeout(
+        Duration::from_secs(10),
+        forger.publish(
+            &format!("{PREFIX}/events/vens/{ven_a}/create"),
+            br#"{"forged":true}"#.to_vec(),
             QoS::AtLeastOnce,
             false,
-            br#"{"forged":true}"#.to_vec(),
-        )
-        .await;
+        ),
+    )
+    .await;
     let forged = entitled.next(Duration::from_secs(5)).await;
     assert!(
         forged.is_none_or(|(_, body)| body["forged"].is_null()),

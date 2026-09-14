@@ -15,18 +15,11 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-# Advisories against a dependency this crate cannot move off, with the reason each is not reachable
-# here. An entry is a *decision*, not a silence: it names the crate that pins the vulnerable version,
-# says why the vulnerable code path is not entered, and is revisited whenever that crate is upgraded.
-# `rumqttc 0.25.1` is the newest release and depends on `rustls-webpki 0.102` directly; the fixes are
-# in 0.103.12 and later, which no 0.102.x carries.
-ignore = [
-    { id = "RUSTSEC-2025-0134", reason = "rustls-pemfile is archived. This crate does not use it - vtn::tls reads PEM through rustls-pki-types PemObject, which is the code rustls-pemfile wraps - and the only remaining edge is rumqttc's. Remove when rumqttc drops it." },
-    { id = "RUSTSEC-2026-0098", reason = "URI name constraints were ignored. The same family and the same reasoning as RUSTSEC-2026-0099 below: reachable only after signature verification, only against a misissued certificate, and only on the broker connection. Remove when rumqttc moves to rustls-webpki 0.103.12 or later." },
-    { id = "RUSTSEC-2026-0099", reason = "Name constraints accepted a wildcard subject. Reachable only after signature verification and only against a misissued certificate, and only in rumqttc's TLS path - the broker connection, whose root store the operator supplies. Nothing here issues certificates. Remove when rumqttc moves to rustls-webpki 0.103.12 or later." },
-    { id = "RUSTSEC-2026-0049", reason = "A certificate with several distributionPoints had all but the first ignored during revocation checking. The same reasoning as RUSTSEC-2026-0104: no CRL is ever supplied to a TLS configuration here, so revocation checking does not run. Remove when rumqttc moves to rustls-webpki 0.103.10 or later." },
-    { id = "RUSTSEC-2026-0104", reason = "A panic parsing a certificate revocation list. This crate supplies no CRL to any TLS configuration - vtn::tls builds a WebPkiClientVerifier without one and the MQTT client passes only roots - so the affected parser is never called. Remove when rumqttc moves to rustls-webpki 0.103.13 or later." },
-]
+# No advisory exceptions. There were five, all reaching the tree through one unmaintained MQTT
+# client; this crate speaks MQTT itself now. An entry here is a decision, not a silence: it must name
+# the crate that pins the vulnerable version, why the vulnerable path is not reachable, and the
+# version that ends the exception.
+ignore = []
 
 [licenses]
 # Nothing here is copyleft, and nothing here should become copyleft without somebody deciding to.

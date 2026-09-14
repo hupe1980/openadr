@@ -365,6 +365,8 @@ fn algorithm_of(key: &jwk::Jwk) -> Option<Algorithm> {
             _ => None,
         },
         AlgorithmParameters::OctetKeyPair(_) => Some(Algorithm::EdDSA),
+        // `OctetKey` is a symmetric secret, and a symmetric secret in a *published* key set is not
+        // a secret. Refused rather than used.
         AlgorithmParameters::OctetKey(_) => None,
     }
 }

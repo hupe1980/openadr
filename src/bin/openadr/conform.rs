@@ -4,7 +4,7 @@
 //! point of a black-box suite is that it runs against implementations whose authors have never
 //! heard of this crate.
 
-use openadr::conformance::{Credential, Runner, Severity, Target};
+use openadr::conformance::{Credential, Runner, Target};
 
 /// Print the usage.
 pub fn print_help() {
@@ -163,11 +163,3 @@ fn credential(
         (None, None) => Ok(None),
     }
 }
-
-/// Every severity, so the help and the report agree on the vocabulary.
-#[allow(dead_code)]
-const SEVERITIES: [Severity; 3] = [
-    Severity::Required,
-    Severity::Recommended,
-    Severity::Extension,
-];

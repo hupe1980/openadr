@@ -5,24 +5,33 @@
 //! reorder pages on one backend and not the other, silently, in a way the conformance suite would
 //! catch only if it happened to be the backend under test.
 
-use crate::model::{ObjectId, ObjectType, Timestamp};
+use crate::model::{ObjectId, ObjectType, SubscriptionRequest, Timestamp};
 use crate::vtn::notify::Route;
 
-use super::StorageError;
+use super::{Sealer, StorageError};
 
 /// The three nullable outbox columns a [`Route`] occupies.
 ///
 /// The columns predate the type and are kept, because they are what an operator greps. The
 /// invariant they cannot express — that exactly one route is present — lives in `Route`, so it is
 /// asserted once here rather than assumed at every read.
-pub(crate) fn route_columns(route: &Route) -> (Option<&str>, Option<&str>, Option<&str>) {
-    match route {
+/// The three nullable columns, in the order the `outbox` table declares them.
+pub(crate) type RouteColumns = (Option<String>, Option<String>, Option<String>);
+
+pub(crate) fn route_columns(route: &Route, sealer: &Sealer) -> Result<RouteColumns, StorageError> {
+    Ok(match route {
         Route::Webhook {
             callback_url,
             bearer_token,
-        } => (Some(callback_url.as_str()), bearer_token.as_deref(), None),
-        Route::Topic { topic } => (None, None, Some(topic.as_str())),
-    }
+        } => (
+            Some(callback_url.clone()),
+            // The outbox is the second place a subscriber's credential lands on disk. The
+            // subscription row is the first; both are sealed, or neither guarantee is one.
+            sealer.seal_opt(bearer_token.as_deref())?,
+            None,
+        ),
+        Route::Topic { topic } => (None, None, Some(topic.clone())),
+    })
 }
 
 /// Rebuild a [`Route`] from those columns.
@@ -33,11 +42,12 @@ pub(crate) fn route_from_columns(
     callback_url: Option<String>,
     bearer_token: Option<String>,
     topic: Option<String>,
+    sealer: &Sealer,
 ) -> Result<Route, StorageError> {
     match (callback_url, topic) {
         (Some(callback_url), None) => Ok(Route::Webhook {
             callback_url,
-            bearer_token,
+            bearer_token: sealer.unseal_opt(bearer_token)?,
         }),
         (None, Some(topic)) => Ok(Route::Topic { topic }),
         (callback_url, topic) => Err(StorageError::Unavailable(format!(
@@ -45,6 +55,36 @@ pub(crate) fn route_from_columns(
             usize::from(callback_url.is_some()) + usize::from(topic.is_some())
         ))),
     }
+}
+
+/// Serialise a subscription's document column, with its borrowed credentials sealed.
+///
+/// A subscription is the one object that carries somebody else's secret, so it is the one object
+/// with its own pair of these. Everything else goes through [`encode`] unchanged.
+pub(crate) fn encode_subscription(
+    request: &SubscriptionRequest,
+    sealer: &Sealer,
+) -> Result<String, StorageError> {
+    if !sealer.is_sealing() {
+        return encode(request);
+    }
+    let mut sealed = request.clone();
+    for operation in &mut sealed.object_operations {
+        operation.bearer_token = sealer.seal_opt(operation.bearer_token.as_deref())?;
+    }
+    encode(&sealed)
+}
+
+/// Read one back, unsealing what [`encode_subscription`] sealed.
+pub(crate) fn decode_subscription(
+    raw: &str,
+    sealer: &Sealer,
+) -> Result<SubscriptionRequest, StorageError> {
+    let mut request: SubscriptionRequest = decode(raw)?;
+    for operation in &mut request.object_operations {
+        operation.bearer_token = sealer.unseal_opt(operation.bearer_token.take())?;
+    }
+    Ok(request)
 }
 
 /// Serialise an object's document column.

@@ -32,12 +32,12 @@ mistaken for a bug.
 | Conformance kit — black-box, 48 clause-citing checks, runs against any VTN; 47 of them proven able to fail | `conformance` | Built; one reading against another implementation |
 | External auth — end-to-end against a real Keycloak: realm, client-credentials grant, token, write | `external-auth` | Complete |
 
-**481 tests**: 289 unit, 71 driving the real HTTP router, 17 property tests, 14 running the VEN
-runtime against a real VTN, 13 running the client against one, 12 over the code generator and the
-drift checks in `xtask`, 11 delivering webhooks over real sockets, 11 in the CLI, 11 doctests, 10
-validating JWTs against a real JWKS, 8 running the conformance suite, 6 publishing to a broker over a
-real socket, 6 completing real TLS handshakes, one against a real Keycloak end to end, and one mDNS
-round trip over a real multicast group. Three of the unit tests are the storage conformance suite,
+**526 tests**: 322 unit, 71 driving the real HTTP router, 20 over the code generator, the drift
+checks and the design-document checks in `xtask`, 17 property tests, 15 running the VEN runtime
+against a real VTN, 14 in the CLI, 13 running the client against one, 11 delivering webhooks over
+real sockets, 11 doctests, 10 validating JWTs against a real JWKS, 8 running the conformance suite,
+6 publishing to a broker over a real socket, 6 completing real TLS handshakes, one against a real
+Keycloak end to end, and one mDNS round trip over a real multicast group. Three of the unit tests are the storage conformance suite,
 which is 57 behaviours run against each backend — PostgreSQL included, which starts its own container
 when no server is configured rather than skipping.
 
@@ -93,8 +93,8 @@ a payload; there is no inbound HTTP endpoint, because a VEN that could accept on
 reached without a broker in the first place. `Waker` is public, so wiring your own handler to it is
 three lines.
 
-**Speak MQTT 5.** The binding says brokers and clients **SHOULD** support it; the publisher speaks
-3.1.1, which is the version that is required.
+**Speak MQTT 5.** The binding says brokers and clients **SHOULD** support it; this crate's MQTT
+client speaks 3.1.1, which is the version that is required.
 
 ## Known limitations
 
@@ -115,48 +115,29 @@ the entry is redelivered when its lease expires. Every notification carries the 
 `modificationDateTime`, and `X-OpenADR-Attempt` names the try, so a receiver can be idempotent.
 Exactly-once would need a two-phase commit with the receiver, which the protocol does not offer.
 
-**Notification fan-out is proportional to its recipients, and the broker fan-out is proportional to
-the VENs.** The network is off the request path, but computing who is entitled is not: a write takes
-a snapshot and inserts one row per recipient. The snapshot is narrowed by the object type being
-written, so the database does the narrowing rather than the VTN loading everything and discarding
-most of it — but per-VEN topics mean a private copy per entitled VEN, so an *untargeted* event on a
-VTN with ten thousand VENs is ten thousand rows by construction.
+**Fan-out is proportional to its recipients.** The network is off the request path, but computing
+who is entitled is not: a write takes a snapshot, narrowed by the object type being written, and
+inserts one row per recipient. Per-VEN topics mean a private copy per entitled VEN, so an
+*untargeted* event on a VTN with ten thousand VENs is ten thousand rows by construction — that is
+what keeps object privacy intact on a shared broker, and the cost of it is the number of them.
 
-Deferring the fan-out to the dispatcher would make writes O(1) and is the wrong trade twice over:
-recipients must be decided against the subscriptions that existed when the change happened, and a
-delivery computed after the transaction cannot be inside it.
+Those publishes overlap: the client serialises only the microseconds between queueing a packet and
+writing it, not the broker round trip, so the bound is `DispatchConfig::concurrency` and the broker.
+Running several dispatcher processes multiplies it, which the outbox's leases make safe.
 
-On PostgreSQL, `POST /events` costs roughly 43 ms p50 with a thousand matching subscriptions, and
+On PostgreSQL, `POST /events` costs roughly 43 ms p50 with a thousand matching subscriptions and
 72 ms with a thousand entitled VENs on the broker path — linear in recipients, and inside what a
 pilot needs. Measure it yourself with
 `cargo test --all-features --test load -- --ignored --nocapture`; treat published figures as shapes
 rather than a capacity plan. Ten thousand VENs, and server-class hardware, are not measured.
 
-**Broker fan-out is a copy per entitled VEN.** Per-VEN topics are what keep object privacy intact on
-a shared broker, and the cost of them is the number of them: an event a thousand VENs are entitled to
-is a thousand publishes. Those publishes overlap — the publisher serialises only the microseconds
-between queueing a packet and writing it, not the broker round trip — so the bound is
-`DispatchConfig::concurrency` and the broker, not one round trip at a time. Running several
-dispatcher processes multiplies it, which the outbox's leases already make safe;
-`MqttConfig::qos = AtMostOnce` removes the acknowledgement and its guarantee together.
-
-**Subscription bearer tokens are stored as given.** Encryption at rest for the secrets a VTN holds on
-behalf of clients — subscription `bearerToken`s and webhook signing keys — is not implemented. That
-is acceptable for the in-memory backend and is not acceptable for a durable one.
-
 **No 3.0 compatibility.** 3.1 is not backwards compatible with 3.0, and carrying both would mean two
 shapes for `targets`, two locations for `/resources`, and flat programme fields alongside
-`attributes` — permanently, in the middle of the model. Dutch GAC 2.0 deployments run on 3.0; an
-adapter at the edge is the intended answer and is not written.
+`attributes` — permanently, in the middle of the model. Dutch GAC 2.0 deployments run on 3.0 and are
+not served.
 
 **Pre-1.0 API and schema.** Breaking changes are possible on any release. The SQL schema is
 authoritative rather than historical and there are no migrations.
-
-**Five advisories stand against one transitive dependency.** `rumqttc 0.25.1`, its newest release,
-pins `rustls-webpki 0.102` — the fixes are in 0.103 — and the archived `rustls-pemfile`. `deny.toml`
-records each with the reason it is not reachable here: two need a misissued certificate, two need a
-certificate revocation list and this crate supplies none, and nothing here calls `rustls-pemfile` at
-all. Each names the version that ends the exception.
 
 ## Where the specification is ambiguous
 

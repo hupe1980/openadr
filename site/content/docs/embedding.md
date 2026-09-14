@@ -24,7 +24,7 @@ compile without `std`.
 | `external-auth` | JWT validation against a JWKS | `jsonwebtoken`, `reqwest` |
 | `webhook` | webhook delivery | `reqwest`, `hmac`, `sha2` |
 | `webhook-signature` | verifying a delivery's signature — **`no_std`-capable**, builds for `thumbv7em-none-eabihf` | `hmac`, `sha2` |
-| `mqtt` | the MQTT publisher (with `vtn`) and the VEN's subscriber (with `ven`) | `rumqttc`, `rustls` |
+| `mqtt` | the MQTT publisher (with `vtn`) and the VEN's subscriber (with `ven`) | `tokio`, `rustls`, `tokio-rustls`, `webpki-roots` |
 | `mdns` | advertising a local VTN (with `vtn`) and browsing for one (with `ven`) | `mdns-sd` |
 | `tls` | the VTN's own TLS listener, and an optional client-certificate gate | `tokio-rustls`, `hyper`, `hyper-util` |
 

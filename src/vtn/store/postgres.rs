@@ -40,12 +40,13 @@ use crate::vtn::notify::{Delivery, Fanout};
 
 use super::outbox::support;
 use super::sql::{
-    cooldown_end, decode, encode, id, not_found, route_columns, route_from_columns, stamp, time,
+    cooldown_end, decode, decode_subscription, encode, encode_subscription, id, not_found,
+    route_columns, route_from_columns, stamp, time,
 };
 use super::{
     BreakerPolicy, DeadLetter, EventQuery, OutboxId, OutboxStats, OwnerKind, ProgramQuery, Queued,
-    ReportQuery, ReportStats, ResourceQuery, RetryPolicy, SharedStorage, Storage, StorageError,
-    Subscriber, SubscriberHealth, SubscriptionQuery, VenQuery, sequenced_id,
+    ReportQuery, ReportStats, ResourceQuery, RetryPolicy, Sealer, SharedStorage, Storage,
+    StorageError, Subscriber, SubscriberHealth, SubscriptionQuery, VenQuery, sequenced_id,
 };
 
 /// The channel a write announces itself on, and a dispatcher listens to.
@@ -62,6 +63,14 @@ const OUTBOX_CHANNEL: &str = "openadr_outbox";
 /// the `C` collation makes that byte-wise regardless of what the database's default collation does
 /// with punctuation.
 const SCHEMA: &str = r#"
+-- What shape these tables are. One row, checked at start-up: `CREATE TABLE IF NOT EXISTS` adds a
+-- missing table and never alters a present one, so without this a schema change half-applies in
+-- silence. See `SCHEMA_VERSION`.
+CREATE TABLE IF NOT EXISTS schema_version (
+    only_row INTEGER PRIMARY KEY CHECK (only_row = 1),
+    version  BIGINT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS program (
     id            TEXT PRIMARY KEY,
     created_at    TEXT COLLATE "C" NOT NULL,
@@ -208,6 +217,9 @@ CREATE INDEX IF NOT EXISTS outbox_due ON outbox(next_attempt_at, lease_until);
 pub struct PostgresStorage {
     pool: PgPool,
     url: String,
+    /// Seals the credentials this VTN holds on a subscriber's behalf. [`Sealer::Plain`] by
+    /// default — durable storage without a key stores them as given, and `openadr vtn` warns.
+    sealer: Sealer,
     /// The `LISTEN` connection, opened on first use.
     ///
     /// Separate from the pool because a listening connection is not returnable to it: it is blocked
@@ -234,10 +246,19 @@ impl PostgresStorage {
         let store = Self {
             pool,
             url: url.to_string(),
+            sealer: Sealer::plain(),
             listener: tokio::sync::Mutex::new(None),
         };
         store.apply_schema().await?;
         Ok(store)
+    }
+
+    /// Seal subscriber credentials at rest with a 32-byte key.
+    ///
+    /// See [`Sealer`]. Without one, a subscription's `bearerToken` is stored as given.
+    pub fn with_encryption_key(mut self, key: &[u8]) -> Result<Self, StorageError> {
+        self.sealer = Sealer::with_key(key)?;
+        Ok(self)
     }
 
     /// Connect and wrap in an `Arc`, ready for [`crate::vtn::VtnBuilder::storage`].
@@ -266,6 +287,23 @@ impl PostgresStorage {
             .await
             .map_err(db)?;
         sqlx::raw_sql(SCHEMA).execute(&mut *tx).await.map_err(db)?;
+
+        // Inside the advisory lock and inside the transaction, so two VTNs starting at once
+        // cannot both read "no stamp" and both decide they are the first (D-125).
+        let found: Option<i64> = sqlx::query_scalar("SELECT version FROM schema_version")
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(db)?;
+        super::check_schema_version(found)?;
+        sqlx::query(
+            "INSERT INTO schema_version (only_row, version) VALUES (1, $1)
+             ON CONFLICT (only_row) DO UPDATE SET version = EXCLUDED.version",
+        )
+        .bind(super::SCHEMA_VERSION)
+        .execute(&mut *tx)
+        .await
+        .map_err(db)?;
+
         tx.commit().await.map_err(db)?;
         Ok(())
     }
@@ -313,12 +351,13 @@ impl PostgresStorage {
         fanout: &Fanout,
         object: AnyObject,
         operation: Operation,
+        sealer: &Sealer,
     ) -> Result<(), StorageError> {
         let deliveries = fanout.deliveries(&object, operation);
         if deliveries.is_empty() {
             return Ok(());
         }
-        insert_deliveries(tx, &deliveries, fanout.now()).await?;
+        insert_deliveries(tx, &deliveries, fanout.now(), sealer).await?;
         announce(tx).await
     }
 
@@ -681,6 +720,7 @@ async fn insert_deliveries(
     tx: &mut sqlx::PgConnection,
     deliveries: &[Delivery],
     now: Timestamp,
+    sealer: &Sealer,
 ) -> Result<(), StorageError> {
     let mut subscription_ids = Vec::with_capacity(deliveries.len());
     let mut object_types = Vec::with_capacity(deliveries.len());
@@ -692,13 +732,13 @@ async fn insert_deliveries(
 
     for delivery in deliveries {
         let (object_type, object_id) = support::subject(delivery);
-        let (callback_url, bearer_token, topic) = route_columns(&delivery.route);
+        let (callback_url, bearer_token, topic) = route_columns(&delivery.route, sealer)?;
         subscription_ids.push(delivery.subscription_id.as_ref().map(|s| s.to_string()));
         object_types.push(object_type.to_string());
         object_ids.push(object_id.to_string());
-        callback_urls.push(callback_url.map(str::to_string));
-        bearer_tokens.push(bearer_token.map(str::to_string));
-        topics.push(topic.map(str::to_string));
+        callback_urls.push(callback_url);
+        bearer_tokens.push(bearer_token);
+        topics.push(topic);
         notifications.push(encode(&delivery.notification)?);
     }
 
@@ -768,6 +808,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Program(program.clone()),
             Operation::Create,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -807,7 +848,7 @@ impl Storage for PostgresStorage {
             n + 1
         ));
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(binds) = target_binds(&filter) {
             q = q.bind(binds);
         }
@@ -871,6 +912,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Program(program.clone()),
             Operation::Update,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -913,13 +955,14 @@ impl Storage for PostgresStorage {
             .await
             .map_err(db)?;
         for object in cascaded {
-            Self::queue(&mut tx, fanout, object, Operation::Delete).await?;
+            Self::queue(&mut tx, fanout, object, Operation::Delete, &self.sealer).await?;
         }
         Self::queue(
             &mut tx,
             fanout,
             AnyObject::Program(program.clone()),
             Operation::Delete,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -972,6 +1015,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Event(event.clone()),
             Operation::Create,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1018,7 +1062,7 @@ impl Storage for PostgresStorage {
             n + 1
         ));
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(binds) = target_binds(&filter) {
             q = q.bind(binds);
         }
@@ -1094,6 +1138,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Event(event.clone()),
             Operation::Update,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1123,13 +1168,14 @@ impl Storage for PostgresStorage {
             .await
             .map_err(db)?;
         for object in cascaded {
-            Self::queue(&mut tx, fanout, object, Operation::Delete).await?;
+            Self::queue(&mut tx, fanout, object, Operation::Delete, &self.sealer).await?;
         }
         Self::queue(
             &mut tx,
             fanout,
             AnyObject::Event(event.clone()),
             Operation::Delete,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1181,6 +1227,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Report(report.clone()),
             Operation::Create,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1235,7 +1282,7 @@ impl Storage for PostgresStorage {
             n + 1
         ));
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(client) = owner_bind(&filter) {
             q = q.bind(client.to_string());
         }
@@ -1317,6 +1364,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Report(report.clone()),
             Operation::Update,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1340,6 +1388,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Report(report.clone()),
             Operation::Delete,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1369,7 +1418,7 @@ impl Storage for PostgresStorage {
         .bind(owner_kind.as_str())
         .bind(request.client_name.as_str())
         .bind(request.program_id.as_ref().map(|p| p.as_str()))
-        .bind(encode(&request)?)
+        .bind(encode_subscription(&request, &self.sealer)?)
         .execute(&mut *tx)
         .await
         .map_err(|e| match db(e) {
@@ -1405,6 +1454,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Subscription(subscription.clone()),
             Operation::Create,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1428,7 +1478,7 @@ impl Storage for PostgresStorage {
             object_type: ObjectType::Subscription,
             client_id: ClientId::new(client)
                 .map_err(|e| StorageError::Unavailable(e.to_string()))?,
-            content: decode(row.get(4))?,
+            content: decode_subscription(row.get(4), &self.sealer)?,
         })
     }
 
@@ -1464,7 +1514,7 @@ impl Storage for PostgresStorage {
             n + 1
         ));
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(client) = owner_bind(&filter) {
             q = q.bind(client.to_string());
         }
@@ -1491,7 +1541,7 @@ impl Storage for PostgresStorage {
                     object_type: ObjectType::Subscription,
                     client_id: ClientId::new(client)
                         .map_err(|e| StorageError::Unavailable(e.to_string()))?,
-                    content: decode(row.get(4))?,
+                    content: decode_subscription(row.get(4), &self.sealer)?,
                 })
             })
             .collect()
@@ -1527,7 +1577,7 @@ impl Storage for PostgresStorage {
                         object_type: ObjectType::Subscription,
                         client_id: ClientId::new(client)
                             .map_err(|e| StorageError::Unavailable(e.to_string()))?,
-                        content: decode(row.get(5))?,
+                        content: decode_subscription(row.get(5), &self.sealer)?,
                     },
                     owner: OwnerKind::from_str_or_ven(&kind),
                 })
@@ -1558,7 +1608,7 @@ impl Storage for PostgresStorage {
         .bind(stamp(modified))
         .bind(request.client_name.as_str())
         .bind(request.program_id.as_ref().map(|p| p.as_str()))
-        .bind(encode(&request)?)
+        .bind(encode_subscription(&request, &self.sealer)?)
         .execute(&mut *tx)
         .await
         .map_err(|e| match db(e) {
@@ -1594,6 +1644,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Subscription(subscription.clone()),
             Operation::Update,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1622,6 +1673,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Subscription(subscription.clone()),
             Operation::Delete,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1659,6 +1711,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Ven(ven.clone()),
             Operation::Create,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1717,7 +1770,7 @@ impl Storage for PostgresStorage {
             n + 1
         ));
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(client) = owner_bind(&filter) {
             q = q.bind(client.to_string());
         }
@@ -1789,6 +1842,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Ven(stored.clone()),
             Operation::Update,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1822,13 +1876,14 @@ impl Storage for PostgresStorage {
             .await
             .map_err(db)?;
         for object in cascaded {
-            Self::queue(&mut tx, fanout, object, Operation::Delete).await?;
+            Self::queue(&mut tx, fanout, object, Operation::Delete, &self.sealer).await?;
         }
         Self::queue(
             &mut tx,
             fanout,
             AnyObject::Ven(ven.clone()),
             Operation::Delete,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1873,6 +1928,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Resource(resource.clone()),
             Operation::Create,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -1919,7 +1975,7 @@ impl Storage for PostgresStorage {
             n + 1
         ));
 
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(sqlx::AssertSqlSafe(sql));
         if let Some(client) = owner_bind(&filter) {
             q = q.bind(client.to_string());
         }
@@ -1995,6 +2051,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Resource(stored.clone()),
             Operation::Update,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -2023,6 +2080,7 @@ impl Storage for PostgresStorage {
             fanout,
             AnyObject::Resource(resource.clone()),
             Operation::Delete,
+            &self.sealer,
         )
         .await?;
         tx.commit().await.map_err(db)?;
@@ -2281,7 +2339,7 @@ impl Storage for PostgresStorage {
             return Ok(());
         }
         let mut tx = self.pool.begin().await.map_err(db)?;
-        insert_deliveries(&mut tx, &deliveries, now).await?;
+        insert_deliveries(&mut tx, &deliveries, now, &self.sealer).await?;
         announce(&mut tx).await?;
         tx.commit().await.map_err(db)?;
         Ok(())
@@ -2336,7 +2394,12 @@ impl Storage for PostgresStorage {
                                     .map_err(|e| StorageError::Unavailable(e.to_string()))
                             })
                             .transpose()?,
-                        route: route_from_columns(row.get(3), row.get(4), row.get(5))?,
+                        route: route_from_columns(
+                            row.get(3),
+                            row.get(4),
+                            row.get(5),
+                            &self.sealer,
+                        )?,
                         notification: decode(row.get(6))?,
                     },
                 })
@@ -2594,7 +2657,7 @@ mod tests {
         let mut conn = sqlx::PgConnection::connect(&server).await.ok()?;
         // Racing another test on the same name is not possible — each names itself — but racing the
         // *server's* catalogue with another `CREATE DATABASE` is, so a duplicate is reuse.
-        let _ = sqlx::query(&format!("CREATE DATABASE {database}"))
+        let _ = sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE {database}")))
             .execute(&mut conn)
             .await;
         let _ = conn.close().await;

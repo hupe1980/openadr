@@ -4,10 +4,72 @@ Notable changes to `openadr`. The format follows [Keep a Changelog](https://keep
 and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — with the 0.x caveat
 that a minor release may break.
 
-The reasoning behind a change lives in `concepts/DECISIONS.md`, cited here as `D-nnn`. What is not
-built yet lives in `concepts/ROADMAP.md`. Neither belongs on this page.
+Entries cite `D-nnn`: the project's architecture decision records, which carry the reasoning and the
+alternative each change rejected. Unfinished work is tracked separately and does not appear here.
 
-## [0.3.1] — unreleased
+## [0.4.0] — 2026-09-14
+
+The MQTT transport is this crate's own, and a sixth audit's findings. **Breaking**, deliberately.
+
+### Added
+
+- **`--storage-key`: subscriber credentials are encrypted at rest.** A subscription's `bearerToken`
+  belongs to the subscriber; with a 32-byte key (hex or base64) it is sealed with AES-256-GCM and a
+  per-value nonce, in the subscription row **and** in the notification queue derived from it.
+  Without a key it is stored as given and the binary warns. Turning it on against an existing
+  database needs no migration. `SqliteStorage::with_encryption_key` and
+  `PostgresStorage::with_encryption_key` are the library form (D-145).
+- **A `schema_version` stamp.** A database written by another release is refused at start-up, by
+  name, instead of half loading — `CREATE TABLE IF NOT EXISTS` adds a missing table and never
+  alters a present one, so a changed column used to produce a database half one shape and half
+  another. Still no migrations: there is no released version to migrate from (D-146).
+- **`openadr::mqtt` — an MQTT 3.1.1 client.** `codec` is packet encoding and decoding with no
+  sockets and no runtime, tested against every truncation of every packet and every malformed
+  length; `conn` owns one connection per task. A QoS 1 publish allocates its own identifier and
+  resolves on the `PUBACK` (D-057), so correlation is a map lookup and any number of publishes are
+  outstanding at once (D-133, D-141).
+- **`VenRuntime::add_resource`.** A gateway that discovers an appliance after registering can now
+  say so. `sync_resources` documented exactly that case and could not reach it: the wanted set lived
+  in a configuration consumed at construction, so there was no way to name a resource the runtime
+  did not start with (D-144).
+
+### Changed
+
+- **`MqttConfig::qos` is `openadr::mqtt::QoS`**, not a third party's. `MqttConfig::queue_capacity`
+  and `MqttPushConfig::{reconnect_delay, queue_capacity}` are replaced by `max_backoff`.
+- **`jsonwebtoken` stays at 9.x, on purpose.** From 10.0 its crypto backend is a choice between the
+  provider `[bans]` refuses and a third implementation carrying a live RSA advisory. The upgrade was
+  made and reverted on that evidence (D-142).
+- `axum`, `tower-http`, `argon2`, `sqlx`, `reqwest`, `mdns-sd`, `jiff` and `uuid` are current.
+
+### Removed
+
+- **`rumqttc`.** With it went five `deny.toml` advisory exceptions — four against `rustls-webpki
+  0.102`, one against the archived `rustls-pemfile` — every one of which named the same exit
+  condition against a crate that had not released since November 2025 (R-019). `cargo deny` now
+  passes advisories, licences, banned crates and registries with an **empty** ignore list.
+- **`QoS::ExactlyOnce`.** It was settable because the enum was a third party's, and nothing here
+  speaks QoS 2's handshake, so choosing it produced publishes that could only ever time out.
+- **`ScheduleOptions::start_interval_is_first_covered`.** A flag offering the other reading of
+  §7.5's `startInterval`, set by nothing but its own unit test, forking the three hardest branches
+  in `core::report`. A specification's ambiguity is resolved once, in writing, by whoever read both
+  examples — not deferred to a caller with less information (D-143).
+- **`IntervalExpander::without_subdivision`** — public, no caller, no test, and it could not be
+  right: `[UG §7.3]` makes a multi-value scalar payload *mean* that many sub-intervals, so turning
+  it off produced windows the specification does not describe. Also `Decision::is_allowed` and the
+  conformance binary's `SEVERITIES`, both dead behind an `#[allow(dead_code)]` (D-144).
+
+### Fixed
+
+- **A VEN stopped receiving notifications for ever after a broker restart.** Nothing read
+  `session_present` `[MQTT 3.1.1 §3.2.2.2]`: the subscriber connected with `cleanSession = 0`,
+  subscribed once and assumed the broker held its subscriptions. It is the silent failure per-VEN
+  topics exist to prevent, arriving through the transport. The connection now holds its filters and
+  re-sends them whenever the broker reports no restored session (D-141).
+- `MqttConfig::url`'s documentation offered `ws://` and `wss://`; the URL parser one function away
+  had always refused them. It refuses them by name, and a test says so.
+
+## [0.3.1] — 2026-09-06
 
 A release-pipeline fix. 0.3.0 shipped without its `aarch64-unknown-linux-musl` binary — the one the
 single-binary site-controller deployment is for — because that job failed.
