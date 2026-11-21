@@ -1,0 +1,42 @@
+# Weekly: which inputs nobody here owns have moved — the specification mirror, the Alliance's
+# enumeration schemas, the surveyed implementations' releases, the profile validators and the
+# Fluvius profile PDF. It reports; it never fails a build. When something moved it opens (or
+# comments on) one issue labelled `inputs`, and a person decides what the move means.
+name: Inputs
+
+on:
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  report:
+    name: Which inputs moved
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Report
+        id: report
+        run: |
+          cargo xtask inputs --markdown | tee report.md
+          tail -1 report.md | grep -q '^0 of ' && echo "moved=false" >> "$GITHUB_OUTPUT" || echo "moved=true" >> "$GITHUB_OUTPUT"
+          cat report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: File it
+        if: steps.report.outputs.moved == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          body="$(printf 'Inputs moved since they were last read (%s):\n\n%s\n\nRead each change, then `cargo xtask inputs --update` (and `cargo xtask spec-sync --update` for the mirror) and commit the result with what it means.' "$(date -u +%F)" "$(cat report.md)")"
+          existing="$(gh issue list --label inputs --state open --json number --jq '.[0].number')"
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh label create inputs --color c5def5 --description "An input nobody here owns has moved" 2>/dev/null || true
+            gh issue create --title "Inputs moved" --label inputs --body "$body"
+          fi

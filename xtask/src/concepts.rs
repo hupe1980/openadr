@@ -73,6 +73,10 @@ pub fn run(root: &Path, write_index: bool) -> Result<()> {
     // A check that reads no files is a check that cannot fail (D-072).
     let mut sources = Vec::new();
     collect(&root.join("concepts"), "md", &mut sources)?;
+    // `concepts/reference/` is third-party material — the specification mirror — whose Markdown
+    // follows its authors' conventions, not these.
+    let reference = root.join("concepts/reference");
+    sources.retain(|path| !path.starts_with(&reference));
     collect(&root.join("src"), "rs", &mut sources)?;
     collect(&root.join("xtask/src"), "rs", &mut sources)?;
     if sources.len() < 10 {
@@ -192,6 +196,11 @@ pub fn run(root: &Path, write_index: bool) -> Result<()> {
         }
     }
 
+    // The spec of specs: every roadmap entry names one folder under `specs/`, and every active folder
+    // is named once (the constitution's development workflow).
+    specified(root, &roadmap, &mut findings);
+    no_published_path_into_the_workshop(root, &mut findings)?;
+
     let index = render_index(&d_ids);
     let index_path = root.join("concepts/DECISIONS_INDEX.md");
     if write_index {
@@ -230,6 +239,103 @@ pub fn run(root: &Path, write_index: bool) -> Result<()> {
         report.push_str(&format!("  {} — {}\n", f.where_, f.what));
     }
     bail!("{report}\n{} finding(s)", findings.len());
+}
+
+/// `### B-nn` entries each carry `**Specified as:** \`NNN-slug\`` naming `specs/NNN-slug/spec.md`,
+/// and every `specs/NNN-*` folder outside `specs/archive/` is named by exactly one entry.
+fn specified(root: &Path, roadmap: &str, findings: &mut Vec<Finding>) {
+    let mut named: BTreeMap<String, String> = BTreeMap::new();
+    let mut current: Option<(String, bool)> = None;
+    let close = |entry: Option<(String, bool)>, findings: &mut Vec<Finding>| {
+        if let Some((id, false)) = entry {
+            findings.push(Finding {
+                where_: ROADMAP.into(),
+                what: format!("{id} names no specification; add a `**Specified as:**` line"),
+            });
+        }
+    };
+    for line in roadmap.lines() {
+        if let Some(id) = line.strip_prefix("### ").filter(|h| h.starts_with("B-")) {
+            close(current.take(), findings);
+            current = Some((id.trim().to_string(), false));
+        } else if line.starts_with("## ") {
+            close(current.take(), findings);
+        } else if let (Some((id, seen)), Some(rest)) =
+            (current.as_mut(), line.strip_prefix("**Specified as:** `"))
+        {
+            let slug = rest.trim_end_matches('`').to_string();
+            *seen = true;
+            if !root.join("specs").join(&slug).join("spec.md").exists() {
+                findings.push(Finding {
+                    where_: ROADMAP.into(),
+                    what: format!("{id} names {slug}, but specs/{slug}/spec.md does not exist"),
+                });
+            }
+            if let Some(other) = named.insert(slug.clone(), id.clone()) {
+                findings.push(Finding {
+                    where_: ROADMAP.into(),
+                    what: format!("{slug} is named by both {other} and {id}"),
+                });
+            }
+        }
+    }
+    close(current.take(), findings);
+
+    let Ok(entries) = fs::read_dir(root.join("specs")) else {
+        findings.push(Finding {
+            where_: "specs/".into(),
+            what: "is missing, so no roadmap entry's specification can be checked".into(),
+        });
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let numbered = name.len() > 4 && name[..3].bytes().all(|b| b.is_ascii_digit());
+        if entry.path().is_dir() && numbered && !named.contains_key(&name) {
+            findings.push(Finding {
+                where_: format!("specs/{name}"),
+                what: "is named by no roadmap entry; name it, or move it to specs/archive/".into(),
+            });
+        }
+    }
+}
+
+/// Nothing a reader of the published tree has can open `concepts/`, `specs/` or `.specify/`, so
+/// nothing published may send them there.
+fn no_published_path_into_the_workshop(root: &Path, findings: &mut Vec<Finding>) -> Result<()> {
+    let mut files = Vec::new();
+    for dir in ["src", "tests", "examples", "site/content"] {
+        for ext in ["rs", "md", "js", "html", "css"] {
+            collect(&root.join(dir), ext, &mut files)?;
+        }
+    }
+    files.push(root.join("README.md"));
+    for path in files {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        for (n, line) in text.lines().enumerate() {
+            for needle in ["concepts/", "specs/", ".specify/"] {
+                let hit = line.match_indices(needle).any(|(i, _)| {
+                    i == 0
+                        || !line.as_bytes()[i - 1].is_ascii_alphanumeric()
+                            && line.as_bytes()[i - 1] != b'-'
+                });
+                if hit {
+                    findings.push(Finding {
+                        where_: format!("{rel}:{}", n + 1),
+                        what: format!("cites a path into {needle}, which a reader of the published tree does not have"),
+                    });
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn read(root: &Path, rel: &str) -> Result<String> {

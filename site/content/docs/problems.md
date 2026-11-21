@@ -29,6 +29,8 @@ Every 4xx and 5xx carries an RFC 9457 [problem](@/docs/vtn.md#errors) body whose
 absolute URI under `https://hupe1980.github.io/openadr/problems/`. RFC 9457 asks that dereferencing
 such a URI produce documentation of the type; each one below is that documentation.
 
+`openadr explain <type>` prints the same text at a terminal.
+
 The `type` is the stable identifier — match on it, not on `title` or `detail`, which are prose and
 may be reworded. `status` repeats the HTTP status so a stored problem is still complete.
 

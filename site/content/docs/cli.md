@@ -5,27 +5,41 @@ weight = 25
 +++
 
 ```console
-$ cargo install openadr --features vtn,client,internal-auth,sqlite
+$ brew install hupe1980/tap/openadr
 ```
 
-One binary, two halves. `openadr vtn` runs a Virtual Top Node; `openadr get`, `post`, `put`,
-`delete` and `watch` talk to one — this one, or anybody's.
+One binary, two halves. `openadr vtn` and `openadr dev` run a Virtual Top Node; `openadr get`,
+`post`, `put`, `delete`, `watch` and `trigger` talk to one — this one, or anybody's. The client
+commands are a second consumer of the crate's own client library, which is how its untaken paths get
+noticed.
 
-They are in the same binary for a reason beyond convenience. The client commands are a **second
-consumer** of the crate's own client library, and a library with one consumer is a library whose
-untaken paths nobody notices. The first thing this arrangement found was that `list_if_changed`
-decoded straight from the socket and skipped the adapter chain, so a client configured for a peer
-that bends the schema got adapted objects from `list()` and raw ones from `list_if_changed()`.
+## A development VTN
+
+```console
+$ openadr dev
+$ source .openadr-dev.env
+```
+
+`openadr vtn` with presets: loopback, two generated clients (`bl-1`, `ven-1`), a per-run token key,
+the inspector at `/_inspect`, and seeded data — a 24-hour price curve rolled forward every quarter
+hour, a capacity event two minutes out, and one for `feeder-7` the VEN cannot see. The credentials
+are printed and written to `.openadr-dev.env` (mode `0600`). Every `openadr vtn` flag still applies:
+`--database` makes it durable, `--env-file` moves the file. A non-loopback `--listen` needs
+`--ephemeral`, because the credentials are on screen.
+
+```console
+$ openadr trigger event      # a 5 kW capacity limit, one minute out, for 30 minutes
+$ openadr trigger cancel     # delete the most recent triggered event
+$ openadr trigger report     # the VEN files a usage report against the price curve
+```
 
 ## Connecting
 
-Flags, or the environment. The environment is what you want in a shell session:
+Flags, or the environment. With client credentials set, the commands do the OAuth2 grant themselves:
 
 ```console
 $ export OPENADR_URL=http://localhost:3000/openadr3/3.1.0
-$ export OPENADR_TOKEN=$(curl -s -d grant_type=client_credentials \
-      -d client_id=bl-1 -d client_secret=$SECRET \
-      $OPENADR_URL/auth/token | jq -r .access_token)
+$ export OPENADR_CLIENT_ID=bl-1 OPENADR_CLIENT_SECRET=$SECRET
 ```
 
 | | |
@@ -33,6 +47,7 @@ $ export OPENADR_TOKEN=$(curl -s -d grant_type=client_credentials \
 | `--url`, `OPENADR_URL` | the base URL, including the base path |
 | `--token`, `OPENADR_TOKEN` | a pre-shared bearer token |
 | `--client-id` / `--client-secret`, `OPENADR_CLIENT_ID` / `OPENADR_CLIENT_SECRET` | OAuth2 client credentials, exchanged at the token endpoint the VTN advertises |
+| `OPENADR_VEN_CLIENT_ID` / `OPENADR_VEN_CLIENT_SECRET` | the VEN, for `conformance` and `trigger report` |
 
 With none of them the request goes out unauthenticated, which is what a public tariff server expects.
 
@@ -100,16 +115,13 @@ survive the VTN restarting underneath it.
 
 ```console
 $ openadr conformance --url http://localhost:3000/openadr3/3.1.0 \
-      --bl-token $BL --ven-token $VEN --ven-client-id ven-1
+      --bl-token $BL --ven-token $VEN --ven-client-id ven-1 --report report.html
 ```
 
-Forty-four black-box checks against any VTN, each citing the sentence of the specification it
-tests. `--json` emits what an interoperability matrix is built from; `--strict` makes any failure
-non-zero rather than only a required one. It **writes** — see
-**[measuring a VTN](@/docs/conformance.md)** for what that means and why it has to.
-
-`cargo test --all-features --test interop -- --ignored --nocapture` runs it against another
-implementation, in containers it starts itself.
+52 black-box checks against any VTN, each citing the sentence of the specification it tests. With
+the environment above it needs no flags. `--report` writes a page to share, `--badge` a shields.io
+badge, `--json` a matrix row; `--strict` makes any failure non-zero. Exit `2` means nothing required
+could be attempted. It **writes** — see **[measuring a VTN](@/docs/conformance.md)**.
 
 ## Finding a local VTN
 
@@ -127,6 +139,21 @@ Browses the local network for VTNs advertising `_openadr3._tcp`, and prints ever
 rather than picking one — which local VTN to enrol with is a decision about the site.
 `--timeout <SECONDS>` and `--json`. Nothing found is not an error. See
 **[finding a local VTN](@/docs/discovery.md)**; `openadr vtn --mdns` is the other end.
+
+## Explaining an error
+
+```console
+$ openadr get events nope-0000000
+error: 404 Not Found: EVENT nope-0000000 not found (request b8e3…)
+  → openadr explain not-found
+
+$ openadr explain not-found
+$ openadr explain ven-cannot-change-a-foreign-ven
+```
+
+Every error that carries one of this VTN's [problem types](@/docs/problems.md) ends with the command
+that explains it. `explain` also takes a conformance check id, a full `type` URI, or nothing (the
+list). The text is compiled in, so it works offline.
 
 ## Hashing a client secret
 

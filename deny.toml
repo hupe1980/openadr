@@ -15,11 +15,19 @@ all-features = true
 [advisories]
 version = 2
 yanked = "deny"
-# No advisory exceptions. There were five, all reaching the tree through one unmaintained MQTT
-# client; this crate speaks MQTT itself now. An entry here is a decision, not a silence: it must name
-# the crate that pins the vulnerable version, why the vulnerable path is not reachable, and the
-# version that ends the exception.
-ignore = []
+# An entry here is a decision, not a silence: it must name the crate that pins the version, why the
+# path is not reachable from the published crate, and what ends the exception. None reaches the
+# `openadr` crate itself; both are unmaintained-crate notices, not vulnerabilities.
+ignore = [
+    # astral-tokio-tar: pinned by testcontainers 0.27, which testcontainers-modules 0.15 (the latest)
+    # requires. Dev-dependency only — it unpacks images in `cargo test`, never in the crate. Ends
+    # when testcontainers-modules moves to a testcontainers release without it.
+    { id = "RUSTSEC-2026-0440", reason = "dev-only, via testcontainers" },
+    # unsafe-libyaml: pinned by serde_yaml_ng, which only `xtask` uses, to read the specification's
+    # YAML on a contributor's machine and in CI. Ends when xtask moves to a maintained pure-Rust
+    # YAML parser.
+    { id = "RUSTSEC-2024-0449", reason = "xtask-only, via serde_yaml_ng" },
+]
 
 [licenses]
 # Nothing here is copyleft, and nothing here should become copyleft without somebody deciding to.

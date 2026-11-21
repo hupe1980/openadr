@@ -176,6 +176,102 @@ async fn the_suite_cleans_up_after_itself() {
     assert!(second.is_conformant(), "the second run failed:\n{second}");
 }
 
+/// Every `PUT` and `DELETE` the suite sends addresses an object the same run created.
+///
+/// The suite writes, and it is pointed at VTNs whose data matters to somebody. Against a VTN broken
+/// in the way the write-side privacy checks look for, a `DELETE` succeeds — so the only thing that
+/// keeps the suite from destroying data it did not create is that it never names such an id
+/// (write-side-privacy/SR-004). A recording proxy sits in front of a VTN for a whole run and holds
+/// every write target against the ids the run's own `POST`s were given.
+#[tokio::test]
+async fn the_suite_writes_only_to_objects_it_created() {
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Seen {
+        created: std::collections::BTreeSet<String>,
+        writes: Vec<(String, String)>,
+    }
+
+    let upstream = start(|c| c).await;
+    let root = upstream.trim_end_matches("/openadr3/3.1.0").to_string();
+    let seen = Arc::new(Mutex::new(Seen::default()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let recorder = seen.clone();
+    let app = axum::Router::new().fallback(axum::routing::any(
+        move |request: axum::extract::Request| {
+            let (root, seen) = (root.clone(), recorder.clone());
+            async move {
+                use axum::response::IntoResponse as _;
+                let (parts, body) = request.into_parts();
+                let bytes = axum::body::to_bytes(body, usize::MAX)
+                    .await
+                    .unwrap_or_default();
+                let target = parts
+                    .uri
+                    .path_and_query()
+                    .map(|p| p.to_string())
+                    .unwrap_or_default();
+                let mut outbound = reqwest::Client::new()
+                    .request(parts.method.clone(), format!("{root}{target}"))
+                    .body(bytes);
+                for (name, value) in parts.headers.iter() {
+                    if name != axum::http::header::HOST {
+                        outbound = outbound.header(name, value);
+                    }
+                }
+                let response = outbound.send().await.unwrap();
+                let status = response.status();
+                let headers = response.headers().clone();
+                let body = response.bytes().await.unwrap_or_default().to_vec();
+                let path = parts.uri.path().to_string();
+                let mut seen = seen.lock().unwrap();
+                if parts.method == axum::http::Method::POST
+                    && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&body)
+                    && let Some(id) = json["id"].as_str()
+                {
+                    seen.created.insert(id.to_string());
+                }
+                if parts.method == axum::http::Method::PUT
+                    || parts.method == axum::http::Method::DELETE
+                {
+                    seen.writes.push((parts.method.to_string(), path));
+                }
+                let mut headers = headers;
+                headers.remove(axum::http::header::CONTENT_LENGTH);
+                headers.remove(axum::http::header::TRANSFER_ENCODING);
+                (status, headers, body).into_response()
+            }
+        },
+    ));
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+
+    let base = format!("http://{addr}/openadr3/3.1.0");
+    Runner::new(full_target(&base)).unwrap().run().await;
+
+    let seen = seen.lock().unwrap();
+    assert!(
+        !seen.writes.is_empty(),
+        "the run sent no PUT or DELETE, so this proves nothing"
+    );
+    let strays: Vec<&(String, String)> = seen
+        .writes
+        .iter()
+        .filter(|(_, path)| {
+            let id = path.rsplit('/').next().unwrap_or_default();
+            !seen.created.contains(id)
+        })
+        .collect();
+    assert!(
+        strays.is_empty(),
+        "the suite wrote to {} object(s) it did not create: {strays:?}",
+        strays.len()
+    );
+}
+
 #[tokio::test]
 async fn a_run_without_ven_credentials_skips_rather_than_passes() {
     // The failure mode a conformance suite has to avoid: reporting "all green" for a run that never
@@ -268,6 +364,12 @@ enum Break {
     /// scope was read as an *identity* and a monitoring credential became the one role object
     /// privacy does not apply to.
     EveryCredentialIsBusinessLogic,
+    /// A `PUT` or `DELETE` carrying any credential is executed as business logic.
+    ///
+    /// The peer advisory of October 2026 from the outside: writes authorized by *role* — "a VEN may
+    /// write VEN objects" — and never by *owner*, so one VEN deletes another's. Reads stay correct,
+    /// which is why every read-side privacy check passes against it.
+    WritesRunAsBusinessLogic,
 }
 
 /// One way a VTN can be wrong, and the checks that must catch it.
@@ -289,7 +391,7 @@ struct Fault {
 ///
 /// Every entry is a real implementation mistake rather than an invented one: five of them were
 /// found in a *peer* VTN by running this suite against it, and the rest are shapes this project has
-/// made itself and recorded in `concepts/DECISIONS.md`.
+/// made itself and recorded in its decision records.
 const FAULTS: &[Fault] = &[
     // -- switches the VTN has ------------------------------------------------
     Fault {
@@ -425,6 +527,29 @@ const FAULTS: &[Fault] = &[
             "missing-object-is-404-problem",
             "problem-uses-the-rfc-9457-media-type",
             "programme-delete-leaves-no-orphan",
+        ],
+    },
+    Fault {
+        name: "a refused write to another client's VEN answers 403, confirming it exists",
+        how: Break::Status(|method, path, status| {
+            if status == StatusCode::NOT_FOUND
+                && (method == axum::http::Method::PUT || method == axum::http::Method::DELETE)
+                && path.contains("/vens/")
+            {
+                return StatusCode::FORBIDDEN;
+            }
+            status
+        }),
+        caught_by: &["foreign-write-is-404-not-403"],
+    },
+    Fault {
+        name: "writes are authorized by role, not by owner",
+        how: Break::WritesRunAsBusinessLogic,
+        caught_by: &[
+            "foreign-write-is-404-not-403",
+            "ven-cannot-change-a-foreign-resource",
+            "ven-cannot-change-a-foreign-subscription",
+            "ven-cannot-change-a-foreign-ven",
         ],
     },
     Fault {
@@ -761,7 +886,8 @@ const FAULTS: &[Fault] = &[
     Fault {
         name: "every credential is read as business logic",
         how: Break::EveryCredentialIsBusinessLogic,
-        // Thirteen checks, which is what D-121 actually cost. Not
+        // Seventeen checks: the thirteen D-121 actually cost, and the four write-side ones, because a
+        // VEN read as business logic may write anything business logic may. Not
         // `ven-cannot-grant-itself-targets` or `ven-cannot-grant-a-resource-targets`: a VEN cannot
         // grant itself a target because `VEN_VEN_REQUEST` has no `targets` member, so the
         // privilege is unreachable rather than merely unauthorised and no amount of role confusion
@@ -769,6 +895,7 @@ const FAULTS: &[Fault] = &[
         // ownership by asking which VENs the caller owns — a question this fault also answers
         // wrongly, so the check compares one wrong answer with another and agrees with itself.
         caught_by: &[
+            "foreign-write-is-404-not-403",
             "hidden-object-is-404-not-403",
             "mqtt-collection-topics-are-business-logic-only",
             "mqtt-foreign-ven-topics-refused",
@@ -778,6 +905,9 @@ const FAULTS: &[Fault] = &[
             "report-round-trips",
             "target-hiding-on-reads",
             "ungranted-targets-are-invisible",
+            "ven-cannot-change-a-foreign-resource",
+            "ven-cannot-change-a-foreign-subscription",
+            "ven-cannot-change-a-foreign-ven",
             "ven-cannot-write-programmes",
             "ven-reads-only-its-own-reports",
             "ven-reads-only-its-own-subscriptions",
@@ -871,7 +1001,7 @@ async fn behind_a_fault(upstream: &str, fault: &'static Fault) -> String {
     // One fault needs something no `fn` pointer can carry: a token the proxy substitutes for
     // whatever the caller presented.
     let business_logic = match fault.how {
-        Break::EveryCredentialIsBusinessLogic => Some(
+        Break::EveryCredentialIsBusinessLogic | Break::WritesRunAsBusinessLogic => Some(
             business_logic_token(upstream)
                 .await
                 .expect("the fixture VTN issues its own tokens"),
@@ -934,7 +1064,14 @@ async fn relay(
     }
     // A credential that is presented at all becomes the business-logic one. A request with none
     // stays anonymous, so "an unauthenticated write is refused" still means what it says.
-    if let (Break::EveryCredentialIsBusinessLogic, Some(token)) = (&fault.how, business_logic)
+    let swap = match fault.how {
+        Break::EveryCredentialIsBusinessLogic => true,
+        Break::WritesRunAsBusinessLogic => {
+            parts.method == axum::http::Method::PUT || parts.method == axum::http::Method::DELETE
+        }
+        _ => false,
+    };
+    if let (true, Some(token)) = (swap, business_logic)
         && headers.contains_key(axum::http::header::AUTHORIZATION)
         && let Ok(value) = axum::http::HeaderValue::from_str(&format!("Bearer {token}"))
     {
@@ -981,12 +1118,12 @@ async fn relay(
 
 /// How many checks must be demonstrably able to fail.
 ///
-/// A ratchet, like `trace`'s. It is not 48 and will not be: a few checks describe behaviour that
+/// A ratchet, like `trace`'s. It is not every check and will not be: a few checks describe behaviour that
 /// cannot be simulated from outside the VTN — a VEN reading another VEN's reports needs the *server*
 /// to be wrong, and a proxy cannot invent data it was never sent. Those are named in
 /// `UNFALSIFIABLE_FROM_OUTSIDE` with the reason, so the gap is a list somebody decided rather than
 /// a number nobody noticed.
-const MIN_FALSIFIABLE: usize = 47;
+const MIN_FALSIFIABLE: usize = 51;
 
 /// Checks no proxy in front of the VTN can make fail, and why.
 ///

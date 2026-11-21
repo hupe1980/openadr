@@ -271,7 +271,14 @@ fn explain(error: ClientError) -> Box<dyn std::error::Error> {
                 .as_deref()
                 .map(|i| format!(" (request {i})"))
                 .unwrap_or_default();
-            format!("{status}: {detail}{instance}").into()
+            // The registry's own types point at their explanation; a peer's are not ours to explain.
+            let pointer = problem
+                .r#type
+                .as_deref()
+                .and_then(openadr::model::problem::slug_of)
+                .map(|p| format!("\n  → openadr explain {}", p.slug))
+                .unwrap_or_default();
+            format!("{status}: {detail}{instance}{pointer}").into()
         }
         other => Box::new(other),
     }

@@ -195,7 +195,10 @@ constrained_string!(
     ///
     /// Schema: `^[a-zA-Z0-9_-]*$`, 1..=128. The empty string is excluded because it cannot address
     /// an object in a path.
-    ObjectId, min = 1, max = 128, url_safe = true
+    ObjectId,
+    min = 1,
+    max = 128,
+    url_safe = true
 );
 
 constrained_string!(
@@ -203,7 +206,10 @@ constrained_string!(
     ///
     /// This is the key of the whole object-privacy model: the VTN stamps it on VEN-created objects
     /// and matches it on read.
-    ClientId, min = 1, max = 128, url_safe = false
+    ClientId,
+    min = 1,
+    max = 128,
+    url_safe = false
 );
 
 constrained_string!(
@@ -217,27 +223,43 @@ constrained_string!(
     /// the way in and two filter terms on the way out — in the field that decides object privacy —
     /// so it is refused where the refusal can still name itself. See
     /// <https://hupe1980.github.io/openadr/docs/spec-notes/>.
-    Target, min = 1, max = 128, url_safe = false, list_safe = true
+    Target,
+    min = 1,
+    max = 128,
+    url_safe = false,
+    list_safe = true
 );
 
 constrained_string!(
     /// Human-chosen VEN name, unique within a VTN.
-    VenName, min = 1, max = 128, url_safe = false
+    VenName,
+    min = 1,
+    max = 128,
+    url_safe = false
 );
 
 constrained_string!(
     /// Human-chosen resource name, unique within its VEN.
-    ResourceName, min = 1, max = 128, url_safe = false
+    ResourceName,
+    min = 1,
+    max = 128,
+    url_safe = false
 );
 
 constrained_string!(
     /// Client-chosen name carried on reports and subscriptions.
-    ClientName, min = 1, max = 128, url_safe = false
+    ClientName,
+    min = 1,
+    max = 128,
+    url_safe = false
 );
 
 constrained_string!(
     /// Program name, unique within a VTN.
-    ProgramName, min = 1, max = 128, url_safe = false
+    ProgramName,
+    min = 1,
+    max = 128,
+    url_safe = false
 );
 
 impl ResourceName {

@@ -10,8 +10,8 @@
 //!
 //! It **does not fail on the peer's divergences** — those are findings about the peer, and the
 //! report is the output. It does assert that the run *happened*: a check that could not reach the
-//! peer is filed as a failure exactly like one the peer failed, so a misconfigured run reads as a
-//! non-conformant peer unless something separates them.
+//! peer is a skip, so a misconfigured run would read as a peer that was barely measured unless
+//! something counts the skips.
 //!
 //! The credentials are written straight into the peer's database, because no VTN has an OpenADR
 //! endpoint for creating its *first* client. That is the one peer-specific thing here; pointing
@@ -245,16 +245,16 @@ async fn the_suite_runs_against_a_peer() {
     // went red on them would be this repository's CI reporting somebody else's bug — which is how a
     // useful measurement gets deleted.
     //
-    // Asserted: that the measurement *happened*. A check that could not reach the peer is filed as
-    // a failure exactly like one the peer failed, so counting attempts is not enough — a wholly
-    // misconfigured run looks like a wholly non-conformant peer. Transport failures are ours.
+    // Asserted: that the measurement *happened*. A check that could not reach the peer is a skip,
+    // so a wholly misconfigured run looks like a barely measured peer. Transport failures are ours.
     let (passed, failed, skipped) = report.tally(Severity::Required);
     println!("required: {passed} passed, {failed} failed, {skipped} skipped");
 
     let unreachable: Vec<&str> = report
-        .failures()
+        .findings
+        .iter()
         .filter(|f| match &f.outcome {
-            Outcome::Failed(why) => why.contains("the request could not be made"),
+            Outcome::Skipped(why) => why.contains("could not be reached"),
             _ => false,
         })
         .map(|f| f.check.id)

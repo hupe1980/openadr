@@ -290,6 +290,34 @@ pub fn checks() -> &'static [Check] {
             severity: Severity::Required,
             needs: Needs::BothRoles,
         },
+        Check {
+            id: "ven-cannot-change-a-foreign-ven",
+            clause: "[Def §VEN created object privacy]",
+            title: "a VEN can neither replace nor delete another client's VEN object",
+            severity: Severity::Required,
+            needs: Needs::BothRoles,
+        },
+        Check {
+            id: "ven-cannot-change-a-foreign-resource",
+            clause: "[Def §Object Privacy]",
+            title: "a VEN can neither replace nor delete a resource under another client's VEN",
+            severity: Severity::Required,
+            needs: Needs::BothRoles,
+        },
+        Check {
+            id: "ven-cannot-change-a-foreign-subscription",
+            clause: "[Def §VEN created object privacy]",
+            title: "a VEN can neither replace nor delete another client's subscription",
+            severity: Severity::Required,
+            needs: Needs::BothRoles,
+        },
+        Check {
+            id: "foreign-write-is-404-not-403",
+            clause: "[Def §Object Privacy]",
+            title: "a refused write to another client's object answers 404, not 403",
+            severity: Severity::Recommended,
+            needs: Needs::BothRoles,
+        },
         // -- reports -------------------------------------------------------
         Check {
             id: "report-round-trips",
@@ -453,6 +481,12 @@ pub(super) async fn run_one(run: &Runner, check: &Check) -> Outcome {
         "ven-reads-only-its-own-reports" => ven_reads_only_its_own_reports(run).await,
         "ven-reads-only-its-own-resources" => ven_reads_only_its_own_resources(run).await,
         "ven-reads-only-its-own-subscriptions" => ven_reads_only_its_own_subscriptions(run).await,
+        "ven-cannot-change-a-foreign-ven" => ven_cannot_change_a_foreign_ven(run).await,
+        "ven-cannot-change-a-foreign-resource" => ven_cannot_change_a_foreign_resource(run).await,
+        "ven-cannot-change-a-foreign-subscription" => {
+            ven_cannot_change_a_foreign_subscription(run).await
+        }
+        "foreign-write-is-404-not-403" => foreign_write_is_404_not_403(run).await,
         "report-round-trips" => report_round_trips(run).await,
         "report-is-stamped-not-claimed" => report_is_stamped_not_claimed(run).await,
         "report-filters-by-event" => report_filters_by_event(run).await,
@@ -642,7 +676,7 @@ fn report_body(event_id: &str, resource: &str, value: f64) -> Value {
     })
 }
 
-/// A transport failure is a failure of the check, with the reason — all of it.
+/// What a request that failed to complete means for the check, with the reason — all of it.
 ///
 /// `reqwest`'s own `Display` is "error sending request for url (…)" and puts the thing that
 /// actually happened — connection refused, TLS handshake failed, DNS — in the source chain. A
@@ -655,7 +689,14 @@ fn transport(e: crate::client::ClientError) -> Outcome {
         message.push_str(&cause.to_string());
         source = cause.source();
     }
-    Outcome::Failed(format!("the request could not be made: {message}"))
+    // A request that never arrived is not evidence about the specification: reporting it as a
+    // failure accuses the VTN of something a slow start or a reset connection did. It is a skip,
+    // and a run in which every required check skipped is reported as "not measured".
+    if matches!(e, crate::client::ClientError::Transport(_)) {
+        Outcome::Skipped(format!("the VTN could not be reached: {message}"))
+    } else {
+        Outcome::Failed(format!("the request could not be made: {message}"))
+    }
 }
 
 /// Grant the configured VEN a target, returning the VEN object's id.
@@ -1777,6 +1818,223 @@ async fn ven_reads_only_its_own_subscriptions(run: &Runner) -> Outcome {
                  a callbackUrl and a bearerToken, so this hands over another subscriber's \
                  credentials",
                 foreign.len()
+            ),
+        )
+    })
+}
+
+/// What a VEN's replace and delete of somebody else's object answered.
+struct ForeignWrite {
+    put: u16,
+    delete: u16,
+}
+
+/// Send a valid `PUT` and then a `DELETE` for `collection/id` as the VEN, and prove the object
+/// survived both by reading it back through business logic.
+///
+/// `id` is always one this run created a moment ago through business logic and tracked for cleanup
+/// (spec 002, SR-004): against a VTN that is broken in exactly the way these checks look for, the
+/// `DELETE` succeeds, and the only object it may then destroy is one the suite planted.
+///
+/// The `PUT` body is valid on purpose. A VTN that validates a body before it authorizes the caller
+/// would refuse an invalid one with `400`, and a privacy check that passes on a schema error is a
+/// privacy check that measured the schema. The `DELETE` has no body and carries the weight.
+async fn foreign_write_refused(
+    run: &Runner,
+    collection: &str,
+    id: &str,
+    put_body: Value,
+    name_field: &str,
+) -> Result<ForeignWrite, Outcome> {
+    let path = format!("{collection}/{id}");
+    let bl = run.business_logic();
+    let before = fetch(bl, &path, &Query::new()).await?;
+    let ven = run.virtual_end_node();
+
+    let put = attempt(ven, "PUT", &path, &Query::new(), Some(&put_body), &[]).await?;
+    let delete = attempt(ven, "DELETE", &path, &Query::new(), None, &[]).await?;
+    for (method, status) in [("PUT", put.status), ("DELETE", delete.status)] {
+        if status.is_success() {
+            return Err(Outcome::Failed(format!(
+                "{method} /{path} as a VEN that does not own it answered {status}: one client \
+                 changed another's object"
+            )));
+        }
+    }
+
+    // A refusal is not enough on its own: a VTN that answers 404 and deletes anyway is still a VTN
+    // where one client erased another's object (SR-002).
+    let after = attempt(bl, "GET", &path, &Query::new(), None, &[]).await?;
+    if after.status.as_u16() != 200 {
+        return Err(Outcome::Failed(format!(
+            "the VTN refused the VEN's writes, but /{path} answers {} to business logic afterwards",
+            after.status
+        )));
+    }
+    let after = after.json().unwrap_or(Value::Null);
+    expect(
+        after[name_field] == before[name_field],
+        format!(
+            "the VTN refused the VEN's PUT, but {name_field} on /{path} changed from {} to {}",
+            before[name_field], after[name_field]
+        ),
+    )?;
+    Ok(ForeignWrite {
+        put: put.status.as_u16(),
+        delete: delete.status.as_u16(),
+    })
+}
+
+/// A resource under a VEN this client does not own, planted through business logic.
+async fn foreign_resource(run: &Runner) -> Result<(String, String), Outcome> {
+    let other_ven = foreign_ven(run).await?;
+    let planted = attempt(
+        run.business_logic(),
+        "POST",
+        "resources",
+        &Query::new(),
+        Some(&json!({
+            "objectType": "BL_RESOURCE_REQUEST",
+            "resourceName": unique("other-resource"),
+            "venID": other_ven,
+        })),
+        &[],
+    )
+    .await?;
+    let id = (planted.status.as_u16() == 201)
+        .then(|| planted.json())
+        .flatten()
+        .and_then(|v| v["id"].as_str().map(str::to_string))
+        .ok_or_else(|| {
+            Outcome::Failed(format!(
+                "could not create a resource under another VEN to test against: {} {}",
+                planted.status,
+                String::from_utf8_lossy(&planted.body)
+            ))
+        })?;
+    run.track("resources", &id);
+    Ok((id, other_ven))
+}
+
+/// A VEN can neither replace nor delete another client's VEN object.
+///
+/// The read half — `ven-reads-only-its-own-vens` — says what a VEN can *see*. This is what it can
+/// *do*, and it is the half a VTN that authorizes by role rather than by owner gets wrong while the
+/// read half passes: in October 2026 a peer shipped exactly that, a VEN able to delete another
+/// user's VEN, as a security advisory.
+async fn ven_cannot_change_a_foreign_ven(run: &Runner) -> Outcome {
+    check!({
+        let id = foreign_ven(run).await?;
+        foreign_write_refused(
+            run,
+            "vens",
+            &id,
+            json!({ "objectType": "VEN_VEN_REQUEST", "venName": unique("taken-over") }),
+            "venName",
+        )
+        .await
+        .map(drop)
+    })
+}
+
+/// A VEN can neither replace nor delete a resource under another client's VEN.
+async fn ven_cannot_change_a_foreign_resource(run: &Runner) -> Outcome {
+    check!({
+        let (id, other_ven) = foreign_resource(run).await?;
+        foreign_write_refused(
+            run,
+            "resources",
+            &id,
+            json!({
+                "objectType": "VEN_RESOURCE_REQUEST",
+                "resourceName": unique("taken-over"),
+                "venID": other_ven,
+            }),
+            "resourceName",
+        )
+        .await
+        .map(drop)
+    })
+}
+
+/// A VEN can neither replace nor delete another client's subscription.
+///
+/// A subscription carries a `callbackUrl` and a `bearerToken`. A VEN that can replace one can
+/// redirect another subscriber's notifications to itself; one that can delete it can silence them.
+async fn ven_cannot_change_a_foreign_subscription(run: &Runner) -> Outcome {
+    check!({
+        let program = make_program(run, json!({ "programName": unique("program") })).await?;
+        let program_id = program["id"].as_str().unwrap_or_default().to_string();
+        let body = |name: String, hook: &str| {
+            json!({
+                "clientName": name,
+                "programID": program_id,
+                "objectOperations": [{
+                    "objects": ["EVENT"],
+                    "operations": ["CREATE"],
+                    "callbackUrl": hook,
+                }],
+            })
+        };
+        let planted = attempt(
+            run.business_logic(),
+            "POST",
+            "subscriptions",
+            &Query::new(),
+            Some(&body(
+                unique("other-subscriber"),
+                "https://subscriber.invalid/hook",
+            )),
+            &[],
+        )
+        .await?;
+        let Some(id) = (planted.status.as_u16() == 201)
+            .then(|| planted.json())
+            .flatten()
+            .and_then(|v| v["id"].as_str().map(str::to_string))
+        else {
+            return Err(Outcome::Skipped(format!(
+                "this VTN would not create a subscription ({}), so there is no foreign one to \
+                 protect",
+                planted.status
+            )));
+        };
+        run.track("subscriptions", &id);
+        foreign_write_refused(
+            run,
+            "subscriptions",
+            &id,
+            body(unique("taken-over"), "https://attacker.invalid/hook"),
+            "clientName",
+        )
+        .await
+        .map(drop)
+    })
+}
+
+/// A refused write to another client's object answers `404`, not `403`.
+///
+/// The write-side twin of `hidden-object-is-404-not-403`. A `403` tells the VEN the id exists, so
+/// writes become a way to enumerate other clients' objects one guess at a time. Recommended rather
+/// than required: the specification says a VEN cannot access the object, and does not say which
+/// status a refused write carries.
+async fn foreign_write_is_404_not_403(run: &Runner) -> Outcome {
+    check!({
+        let id = foreign_ven(run).await?;
+        let statuses = foreign_write_refused(
+            run,
+            "vens",
+            &id,
+            json!({ "objectType": "VEN_VEN_REQUEST", "venName": unique("probe") }),
+            "venName",
+        )
+        .await?;
+        expect(
+            statuses.put == 404 && statuses.delete == 404,
+            format!(
+                "a refused PUT answered {} and a refused DELETE {}; anything but 404 confirms to \
+                 the VEN that another client's object has that id",
+                statuses.put, statuses.delete
             ),
         )
     })

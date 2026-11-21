@@ -48,8 +48,8 @@ credentials are revoked, and nobody can delete it through the API.
 .credentials(Credentials::new("client-id", &secret).with_token_url(url))
 .credentials(Credentials::new("client-id", &secret).with_scopes("read_targets"))
 
-// Or a pre-shared token: a gateway that already authenticated you, or a profile
-// like Fluvius' NetFlex that authenticates with mutual TLS and issues no tokens.
+// Or a pre-shared token: a gateway that already authenticated you, or a
+// deployment that authenticates with mutual TLS and issues no tokens.
 .bearer_token(token)
 ```
 
@@ -160,8 +160,9 @@ synthetic one, so the variant is always usable.
 
 ## Profile adapters
 
-Deployed profiles bend the schema. Fluvius' NetFlex sends `reportDescriptor.frequency` as an ISO
-duration where the schema says integer, and adds a `required` boolean the schema does not define.
+Deployed profiles bend the schema. Fluvius' NetFlex NL.2.4 sent `reportDescriptor.frequency` as an
+ISO duration where the schema says integer, and added a `required` boolean the schema does not
+define (NL.2.5 dropped both).
 
 Widening the model for one peer would weaken it for every other deployment, so the deviation is an
 adapter at the edge instead:

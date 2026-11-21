@@ -56,8 +56,13 @@ asserts four things about what actually arrives on the broker, including that on
 another's topic. Worth running for any change to MQTT or object privacy. Set `OPENADR_VTN_URL` and
 `OPENADR_BROKER` to point it at a stack you already have.
 
-`cargo xtask spec-sync` fetches the public specification mirror into `specs/`, which is not vendored
-here. Some tests and the payload-table generator need it.
+`cargo xtask spec-sync` puts the public specification mirror at the commit `spec.lock` pins, in a
+git-ignored reference directory (set `OPENADR_REFERENCE` to choose one); it is not vendored here.
+Some tests and the payload-table generator need it. `cargo xtask spec-sync --update` moves the pin
+to the mirror's head and prints what changed — commit that one-line diff on its own, after reading
+the output. Only the OpenAPI document is Apache-2.0; never commit the Definition or User Guide.
+`cargo xtask inputs` reports which other inputs — peer releases, profile validators, the Fluvius
+PDF — have moved since `inputs.lock` recorded them; CI runs it weekly and files an issue.
 
 ## Cutting a release
 

@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="openadr-base" content="__BASE_PATH__">
+<title>OpenADR inspector</title>
+<link rel="stylesheet" href="/_inspect/style.css">
+<script src="/_inspect/app.js" defer></script>
+</head>
+<body>
+<header class="bar">
+  <div class="brand"><span class="dot"></span> OpenADR inspector</div>
+  <nav>
+    <button type="button" data-view="timeline" class="tab active">Timeline</button>
+    <button type="button" data-view="privacy" class="tab">Who sees what</button>
+    <button type="button" data-view="deliveries" class="tab">Deliveries</button>
+  </nav>
+  <div class="status"><span id="who"></span><span id="updated"></span></div>
+</header>
+
+<main>
+  <section id="signin" class="card narrow" hidden>
+    <h1>Sign in</h1>
+    <p class="muted">Credentials for this VTN. <code>openadr dev</code> prints a link that fills these in.</p>
+    <form id="signin-form">
+      <label>Business logic <input name="bl" placeholder="bl-1:secret" autocomplete="off" required></label>
+      <label>VEN <span class="muted">(optional, for who sees what)</span> <input name="ven" placeholder="ven-1:secret" autocomplete="off"></label>
+      <button type="submit" class="primary">Open</button>
+      <p id="signin-error" class="error" hidden></p>
+    </form>
+  </section>
+
+  <section id="timeline" class="view" hidden>
+    <div class="head">
+      <h1>Timeline</h1>
+      <p class="muted">Every event business logic can see, from an hour ago to a day ahead. Shade is the interval's value; hover for detail.</p>
+    </div>
+    <div id="axis" class="axis"></div>
+    <div id="rows"></div>
+    <p id="timeline-empty" class="empty" hidden>No events yet. Try <code>openadr trigger event</code>.</p>
+  </section>
+
+  <section id="privacy" class="view" hidden>
+    <div class="head">
+      <h1>Who sees what</h1>
+      <p class="muted">Each event as business logic sees it, and whether the VEN can read it — asked of this VTN with the VEN's own credential, so this column is the enforcement, not a model of it.</p>
+    </div>
+    <div id="privacy-summary" class="tiles"></div>
+    <table class="grid">
+      <thead><tr><th>Event</th><th>Programme</th><th>Targets</th><th id="ven-col">VEN</th></tr></thead>
+      <tbody id="privacy-rows"></tbody>
+    </table>
+    <p id="privacy-noven" class="empty" hidden>Sign in with a VEN credential to compare.</p>
+  </section>
+
+  <section id="deliveries" class="view" hidden>
+    <div class="head">
+      <h1>Deliveries</h1>
+      <p class="muted">The notification outbox: what is queued, what was given up on, and which subscribers are failing.</p>
+    </div>
+    <div id="health" class="tiles"></div>
+    <div class="actions"><button type="button" id="retry" class="primary">Retry abandoned notifications</button><span id="retry-result" class="muted"></span></div>
+    <h2>Dead letters</h2>
+    <table class="grid">
+      <thead><tr><th>Enqueued</th><th>Object</th><th>Destination</th><th>Attempts</th><th>Last error</th></tr></thead>
+      <tbody id="dead-rows"></tbody>
+    </table>
+    <h2>Failing subscribers</h2>
+    <table class="grid">
+      <thead><tr><th>Subscription</th><th>Failures in a row</th><th>Cut off until</th><th>Last error</th></tr></thead>
+      <tbody id="subscriber-rows"></tbody>
+    </table>
+  </section>
+</main>
+<div id="tip" class="tip" hidden></div>
+</body>
+</html>

@@ -19,7 +19,8 @@
 //! subject *means* is a deployment's decision and guessing at a Common Name is how one ends up
 //! authenticating on a string that was never meant to be one.
 //!
-//! Fluvius' NetFlex profile wants the pair: mutual TLS at the edge, no OAuth2 `[NetFlex §5.4]`.
+//! The pair is what a deployment that authenticates with mutual TLS rather than OAuth2 needs — as
+//! Fluvius' NetFlex profile did until NL.2.5 moved it to Entra ID tokens.
 //!
 //! ```no_run
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {

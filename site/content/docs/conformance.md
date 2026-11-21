@@ -122,7 +122,10 @@ fail everything else for the same reason.
   only its own target on the object; a hidden object is a `404` rather than a `403`; a VEN reads
   only its own VENs, its own subscriptions, the reports it filed, and the resources under the
   VENs it owns; and it cannot write targets onto a resource either, which is the half of the
-  discriminator rule an implementation adds `/resources` without carrying across.
+  discriminator rule an implementation adds `/resources` without carrying across. On the write
+  side, a VEN can neither replace nor delete another client's VEN object, resource or
+  subscription — each is read back through business logic afterwards, so a refusal that deletes
+  anyway still fails — and the refusal should be a `404` too.
 - **Reports** — a report a VEN files comes back with its resources, its interval ids, its decimal
   values and its `payloadDescriptors` intact; its `clientID` is stamped from the credential rather
   than copied from the body; `?eventID=` returns that event's reports and no others; and a report
@@ -152,7 +155,7 @@ suite is also run against **deliberately broken** ones: a table of faults — a 
 proxy rewriting the request, status, headers or JSON body — each naming exactly the checks that must
 catch it.
 
-> **47 of 48 checks have been observed failing.**
+> **51 of 52 checks have been observed failing.**
 
 "Exactly" is the load-bearing word. A check missing from a fault's list did not notice the defect it
 exists for; a check listed on a fault it is not about is a check whose failure does not mean what its
@@ -171,6 +174,41 @@ events, and the ownership checks plant an object belonging to somebody else.
 
 Self-agreement is the mistake this page exists to prevent, and building the instrument is not an
 exemption from it.
+
+## Sharing the result
+
+```console
+$ openadr conformance … --report report.html --badge badge.json
+```
+
+`--report` writes one self-contained HTML page: the verdict, the three severities counted
+separately, then every check — failures first and expanded, each with the clause it tests, what the
+VTN did, and the `openadr explain` command for it. It works offline, prints cleanly, and runs no
+script: text the VTN sent back is escaped, and the page's Content-Security-Policy forbids scripts.
+
+`--badge` writes a [shields.io endpoint](https://shields.io/badges/endpoint-badge) document —
+`OpenADR 3.1 · 52/52 required` — to commit or publish and point a badge at.
+
+A run that attempted no required check (no credentials, or a VTN that could not be reached) is
+reported as *not measured* and exits `2`. A connection that fails is a skip, never a failure.
+
+### In CI
+
+{% raw %}
+```yaml
+- uses: hupe1980/openadr@v0.5.0
+  with:
+    url: http://localhost:3000/openadr3/3.1.0
+    bl-client: bl-1:${{ secrets.BL_SECRET }}
+    ven-client: ven-1:${{ secrets.VEN_SECRET }}
+    ven-client-id: ven-1
+```
+{% endraw %}
+
+The action downloads the released binary for the runner (Linux x64/arm64, macOS arm64), checks it
+against the release's SHA-256, runs the suite, writes a job summary, uploads `report.html`,
+`badge.json` and `report.json` as the `openadr-conformance` artifact, and fails the step when a
+required check fails. `strict: true` fails it on any failure; `version` pins a release.
 
 ## As a library
 
@@ -192,47 +230,19 @@ println!("{}", report.to_json());
 
 `--json`, or `Report::to_json`, is what a published interoperability matrix is built from.
 
-## One reading, and what it cost
+## Against another implementation
 
-On 2026-09-06 this was run against another OpenADR 3 VTN, in production at several DSOs.
-`cargo test --all-features --test interop -- --ignored --nocapture` reproduces it: the harness starts
-that VTN and a database in containers, gives it a first client, and points the suite at it.
+`cargo test --all-features --test interop -- --ignored --nocapture` starts another OpenADR 3 VTN and
+a database in containers and points the suite at it; CI runs it weekly against that project's
+current release and publishes the JSON. It never fails on the peer's findings — those are the output
+— only when nothing was measured.
 
-**30 of 36 attempted required checks passed**, including object privacy in full: ownership
-filtering, target grants, target hiding, `404`-rather-than-`403`, and a VEN reading only its own
-VENs and subscriptions. Four MQTT checks skipped, because that VTN advertises no broker.
-
-Six required failures, each a concrete interoperability hazard:
-
-| | |
-|---|---|
-| `GET /notifiers` carries **no `WEBHOOK` key** | The key exists so a client can *tell* whether webhooks are available. A client asking gets no answer. |
-| **`P9999Y` is normalised to `P9999Y0M0DT0H0M0S`** | The sentinel means "no end". Rewritten, it is an ordinary 9999-year span that a literal comparison does not recognise. |
-| **An `intervalPeriod` without `start` is rejected** | `intervalPeriod` has no required fields in either 3.1.0 or 3.1.1, and the User Guide's own §7.4 example is an interval that overrides `duration` and inherits `start`. |
-| **An event's intervals do not round-trip unchanged** | What a report quotes to correlate its data is the interval it was written against. |
-| **`POST` does not stamp all of `id`, the timestamps and `objectType`** | A client cannot tell what it created from what it sent. |
-| **The token endpoint answers no `Cache-Control: no-store`** | RFC 6749 §5.1 makes it a **MUST** of any response that may carry a token. |
-
-### It found two things here, too
-
-That is the half of the exercise that is easy to forget to expect, and it is the better argument for
-doing it.
-
-**A sentinel matched by spelling.** This crate recognised `P9999Y` as "forever" by comparing the
-literal string. Given the normalised form it parsed an ordinary 9999-year span, which overflows the
-representable range when added to any modern instant — so the event failed to expand and the VEN's
-timeline recorded it as *skipped*. A perpetual price signal from that peer simply disappeared. And
-because the value renders back as `P9999Y`, a debug print showed the right string; only the schedule
-knew. The sentinel is now recognised by value and still written as the literal.
-
-**A check that was a preference.** `programme-delete-cascades` asserted that deleting a programme
-removes its events, cited a Definitions section that says nothing of the sort, and reported the peer
-as non-conformant for refusing the delete instead. Cascading and refusing are both defensible; what
-no reading permits is deleting the programme and leaving orphaned events. The check now tests
-*that*, and both implementations pass it.
-
-A conformance suite run only against its author never has to survive its own citations being read
-back.
+The disagreements it has surfaced are the kind worth a pull request on either side: a
+`GET /notifiers` with no `WEBHOOK` key, `P9999Y` normalised into an ordinary 9999-year span, an
+`intervalPeriod` without `start` refused, a token endpoint without `Cache-Control: no-store`. It has
+found defects here too — a sentinel recognised by spelling rather than by value, and a check that
+filed this project's choice as the specification's requirement. Both are fixed; the second is why
+recommended and extension checks are separate severities.
 
 ## If you run it
 

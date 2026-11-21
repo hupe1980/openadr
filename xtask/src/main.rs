@@ -2,7 +2,9 @@
 //!
 //! `cargo xtask <command>`:
 //!
-//! * `spec-sync`  — fetch the public OpenADR 3 specification mirror into `specs/`
+//! * `spec-sync`  — put the public OpenADR 3 specification mirror at the commit `spec.lock` pins, in
+//!   the reference directory ([`reference_dir`]: `$OPENADR_REFERENCE`, else the git-ignored
+//!   `concepts/reference/`); `--update` moves the pin to the mirror's head
 //! * `codegen`    — regenerate `src/schema/table.rs` from the enumeration schemas
 //! * `check-drift`— fail if the checked-in table no longer matches the specification
 //! * `check-model`— fail if the wire model no longer matches the OpenAPI document
@@ -23,12 +25,16 @@ use std::{
 use anyhow::{Context, Result, bail};
 use serde_yaml_ng::Value;
 
+use crate::pin::{PIN_PATH, SpecPin};
+
 mod concepts;
+mod inputs;
+mod mirror;
 mod model;
 mod paths;
+mod pin;
 mod trace;
 
-const SPEC_REPO: &str = "https://github.com/grid-coordination/openadr3-specification";
 const TABLE_PATH: &str = "src/schema/table.rs";
 const OPENAPI_PATH: &str = "src/vtn/openapi.json";
 /// The published registry every `problem.type` URI resolves to.
@@ -42,7 +48,7 @@ const LIB_PATH: &str = "src/lib.rs";
 fn main() -> Result<()> {
     let command = std::env::args().nth(1).unwrap_or_else(|| "help".into());
     match command.as_str() {
-        "spec-sync" => spec_sync(),
+        "spec-sync" => spec_sync(std::env::args().nth(2).as_deref() == Some("--update")),
         "codegen" => {
             let generated = generate_table()?;
             fs::write(root().join(TABLE_PATH), &generated)?;
@@ -57,13 +63,19 @@ fn main() -> Result<()> {
         "check-paths" => check_paths(),
         "check-problems" => check_problems(),
         "check-suite" => check_suite(),
-        "trace" => trace::run(&spec_dir(), &spec_version()?, &root()),
+        "trace" => trace::run(&spec_dir()?, &spec_version()?, &root()),
+        "inputs" => {
+            let flags: Vec<String> = std::env::args().skip(2).collect();
+            let has = |f: &str| flags.iter().any(|a| a == f);
+            inputs::run(&root(), &spec_pin()?, has("--update"), has("--markdown")).map(drop)
+        }
         "check-concepts" => concepts::run(&root(), false),
         "concepts-index" => concepts::run(&root(), true),
         other => {
             let usage = format!(
                 "cargo xtask <command>\n\n\
-                 spec-sync       fetch the specification mirror into specs/\n\
+                 spec-sync       put the specification mirror at the commit spec.lock pins\n\
+                 spec-sync --update  move the pin to the mirror's head and print what changed\n\
                  codegen         regenerate {TABLE_PATH} from the enumeration schemas\n\n\
                  check-drift     fail if {TABLE_PATH} is out of date\n\
                  check-model     fail if the wire model no longer matches openadr3.yaml\n\
@@ -71,6 +83,7 @@ fn main() -> Result<()> {
                  check-problems  fail if a problem.type URI resolves to nothing\n\
                  check-suite     fail if a Storage method or a written behaviour goes unexercised\n\
                  trace           fail if a MUST or SHALL sits in a section nothing cites\n\
+                 inputs          report which inputs nobody here owns have moved (--update, --markdown)\n\
                  check-concepts  fail if a D/R/B citation or a concepts link does not resolve\n\
                  concepts-index  regenerate concepts/DECISIONS_INDEX.md"
             );
@@ -113,35 +126,46 @@ fn root() -> PathBuf {
         .to_path_buf()
 }
 
-fn spec_dir() -> PathBuf {
-    root().join("specs/openadr3-specification")
+/// Where third-party reference material lives: `$OPENADR_REFERENCE` when set, else the git-ignored
+/// `concepts/reference/` of this checkout. `specs/` belongs to Spec Kit's feature specifications.
+fn reference_dir() -> PathBuf {
+    std::env::var_os("OPENADR_REFERENCE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root().join("concepts/reference"))
 }
 
-fn spec_sync() -> Result<()> {
-    let dir = spec_dir();
-    if dir.exists() {
-        println!("updating {}", dir.display());
-        run(Command::new("git")
-            .arg("-C")
-            .arg(&dir)
-            .arg("pull")
-            .arg("--ff-only"))
-    } else {
-        fs::create_dir_all(dir.parent().unwrap())?;
-        println!("cloning {SPEC_REPO}");
-        run(Command::new("git")
-            .arg("clone")
-            .arg("--depth")
-            .arg("1")
-            .arg(SPEC_REPO)
-            .arg(&dir))
-    }
+/// The specification mirror `spec-sync` maintains, inside [`reference_dir`] — verified to be at the
+/// commit `spec.lock` names before anything reads it.
+///
+/// Every reader goes through here, so a mirror that moved, was rewritten upstream, or was never
+/// synced fails every check with the instruction that fixes it, rather than passing against a
+/// document nobody pinned (001-spec-pin/SR-002).
+fn spec_dir() -> Result<PathBuf> {
+    static ANNOUNCED: std::sync::Once = std::sync::Once::new();
+    let pin = spec_pin()?;
+    let dir = reference_dir().join("openadr3-specification");
+    mirror::verify(&dir, &pin)?;
+    ANNOUNCED.call_once(|| eprintln!("specification {} @ {}", pin.url, pin.short()));
+    Ok(dir)
 }
 
-fn run(command: &mut Command) -> Result<()> {
-    let status = command.status().context("failed to run git")?;
-    if !status.success() {
-        bail!("command failed with {status}");
+fn spec_pin() -> Result<SpecPin> {
+    let path = root().join(PIN_PATH);
+    let text = fs::read_to_string(&path).with_context(|| format!("could not read {PIN_PATH}"))?;
+    SpecPin::parse(&text)
+}
+
+/// `cargo xtask spec-sync [--update]` — see [`mirror::sync`].
+fn spec_sync(update: bool) -> Result<()> {
+    let path = root().join(PIN_PATH);
+    let pin = spec_pin()?;
+    let dir = reference_dir().join("openadr3-specification");
+    match mirror::sync(&dir, &pin, update)? {
+        Some(next) => {
+            fs::write(&path, next.render(&fs::read_to_string(&path)?))?;
+            println!("wrote {PIN_PATH}: review the diff above before committing it");
+        }
+        None => println!("specification {} @ {}", pin.url, pin.short()),
     }
     Ok(())
 }
@@ -152,7 +176,7 @@ fn check_drift() -> Result<()> {
         .with_context(|| format!("{TABLE_PATH} is missing; run `cargo xtask codegen`"))?;
     if generated != existing {
         bail!(
-            "{TABLE_PATH} no longer matches the specification in specs/.\n\
+            "{TABLE_PATH} no longer matches the specification mirror.\n\
              The enumerations changed upstream. Run `cargo xtask codegen`, read the diff, and \
              adjust any code that relied on the old constraints."
         );
@@ -163,7 +187,7 @@ fn check_drift() -> Result<()> {
         .with_context(|| format!("{OPENAPI_PATH} is missing; run `cargo xtask codegen`"))?;
     if document != existing {
         bail!(
-            "{OPENAPI_PATH} no longer matches the specification in specs/.\n\
+            "{OPENAPI_PATH} no longer matches the specification mirror.\n\
              `GET /openapi.json` serves this document, so a client generated from it would \
              describe a different API than the one this VTN implements. Run `cargo xtask codegen`."
         );
@@ -178,11 +202,11 @@ fn check_drift() -> Result<()> {
 
 /// The OpenAPI document the VTN serves at `GET /openapi.json`, as compact JSON.
 ///
-/// A copy of `openadr3.yaml`, transcoded to JSON and checked in — because `specs/` is fetched
-/// rather than vendored, and a document the VTN serves has to exist in a build that never ran
-/// `spec-sync`. The Alliance publishes it under Apache 2.0 (see `specs/…/LICENSE` and `NOTICE`), so
-/// redistributing it is a matter of attribution rather than permission, and the attribution is
-/// written into `info` below.
+/// A copy of `openadr3.yaml`, transcoded to JSON and checked in — because the specification is
+/// fetched rather than vendored, and a document the VTN serves has to exist in a build that never
+/// ran `spec-sync`. The Alliance publishes it under Apache 2.0 (see the mirror's `LICENSE` and
+/// `NOTICE`), so redistributing it is a matter of attribution rather than permission, and the
+/// attribution is written into `info` below.
 ///
 /// Two things are deliberately *not* done here:
 ///
@@ -268,8 +292,9 @@ fn check_paths() -> Result<()> {
 ///
 /// RFC 9457 §3.1.1 asks for that, and the docs claim it. It held only as long as somebody
 /// remembered to add a page whenever a slug was added — so this compares the two lists instead.
-/// The crate side is [`openadr::model::problem::PROBLEM_TYPES`]; the published side is the
-/// `aliases` array in the registry page, which is what Zola turns into the resolving URLs.
+/// The crate side is [`openadr::model::problem::PROBLEMS`]; the published side is the `aliases`
+/// array in the registry page, which Zola turns into the resolving URLs, and the page's table, whose
+/// status and meaning must equal the crate's word for word — they are what `openadr explain` prints.
 fn check_problems() -> Result<()> {
     let page = fs::read_to_string(root().join(PROBLEMS_PATH))
         .with_context(|| format!("reading {PROBLEMS_PATH}"))?;
@@ -290,9 +315,9 @@ fn check_problems() -> Result<()> {
         .filter_map(|line| line.trim().trim_matches('"').rsplit('/').next())
         .filter(|slug| !slug.is_empty())
         .collect();
-    let minted: BTreeSet<&str> = openadr::model::problem::PROBLEM_TYPES
+    let minted: BTreeSet<&str> = openadr::model::problem::PROBLEMS
         .iter()
-        .copied()
+        .map(|p| p.slug)
         .collect();
 
     let unpublished: Vec<&&str> = minted.difference(&published).collect();
@@ -312,7 +337,31 @@ fn check_problems() -> Result<()> {
         bail!(message);
     }
 
-    println!("all {} problem type URIs resolve", minted.len());
+    // The table rows: `| \`slug\` | 400 | meaning |`.
+    let mut drift = String::new();
+    for problem in openadr::model::problem::PROBLEMS {
+        let status = problem
+            .status
+            .map_or_else(|| "*varies*".to_string(), |s| s.to_string());
+        let row = format!("| `{}` | {status} | {} |", problem.slug, problem.meaning);
+        if !page.lines().any(|line| line == row) {
+            drift.push_str(&format!(
+                "  - {}: expected the row\n    {row}\n",
+                problem.slug
+            ));
+        }
+    }
+    if !drift.is_empty() {
+        bail!(
+            "{PROBLEMS_PATH} no longer says what `openadr explain` prints; edit \
+             src/model/problem.rs and copy the row:\n{drift}"
+        );
+    }
+
+    println!(
+        "all {} problem type URIs resolve, and their text matches",
+        minted.len()
+    );
     Ok(())
 }
 
@@ -399,7 +448,7 @@ fn check_suite() -> Result<()> {
 /// The OpenAPI document for the version the crate declares.
 fn read_spec() -> Result<Value> {
     let version = spec_version()?;
-    let path = spec_dir().join(&version).join("openadr3.yaml");
+    let path = spec_dir()?.join(&version).join("openadr3.yaml");
     if !path.exists() {
         bail!(
             "{} not found; run `cargo xtask spec-sync` first",
@@ -458,7 +507,7 @@ const STRING_ENUMS: &[(&str, &str, &str)] = &[
 
 fn generate_table() -> Result<String> {
     let version = spec_version()?;
-    let base = spec_dir().join(&version).join("enumerations");
+    let base = spec_dir()?.join(&version).join("enumerations");
     if !base.exists() {
         bail!(
             "{} not found; run `cargo xtask spec-sync` first",
@@ -479,7 +528,8 @@ fn generate_table() -> Result<String> {
         "//! Payload specifications generated from the OpenADR enumeration schemas.\n\
          //!\n\
          //! **Generated file — do not edit.** Regenerate with `cargo xtask codegen` after updating\n\
-         //! `specs/openadr3-specification/<version>/enumerations/*.schema.yaml`.\n\
+         //! `openadr3-specification/<version>/enumerations/*.schema.yaml`, the mirror `cargo xtask\n\
+         //! spec-sync` fetches.\n\
          //!\n\
          //! All six enumeration files are read: the four that describe a `valuesMap` become\n\
          //! [`PAYLOAD_SPECS`], and the two that constrain a descriptor field become string tables.\n\

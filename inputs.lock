@@ -1,0 +1,13 @@
+# Inputs this project reasons from and does not own: what each looked like when somebody last read
+# it. `cargo xtask inputs` reports which have moved since; deciding what a move means is a person's
+# job. After reading the change, `cargo xtask inputs --update` records the new state. The
+# specification mirror itself is pinned in spec.lock and reported alongside.
+#
+# name            kind    url                                                                       recorded
+schemas           head    https://github.com/oadr3-org/openadr3-schemas                             9912c340f816f4e3fe13315ed7cc1082d8fa1a8b
+peer-rust-vtn     tag     https://github.com/OpenLEADR/openleadr-rs                                 0.2.8
+peer-python       tag     https://github.com/ElaadNL/openadr3-client                                2.4.2
+profile-gac       tag     https://github.com/ElaadNL/openadr3-client-gac-compliance                 4.0.0
+profile-nlflex    tag     https://github.com/ElaadNL/openadr3-client-nlflex-compliance              0.3.0
+interop-harness   tag     https://github.com/otfabric/openadr-interop                               0.8.3
+profile-netflex   sha256  https://www.fluvius.be/sites/fluvius/files/2026-04/netflex-der-technische-specificatie-klant.pdf  4ccba238f2ed9c49d76f53cba31b8be26cbd4d5dbbf70725519ad1d9b26ec41b

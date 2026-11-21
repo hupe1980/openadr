@@ -1,7 +1,7 @@
 //! Wire adapters: making non-conformant peers parseable without weakening the model.
 //!
-//! Deployed profiles bend the schema. Fluvius' NetFlex profile, for instance, sends
-//! `reportDescriptor.frequency` as an ISO 8601 duration where the schema says integer, and adds a
+//! Deployed profiles bend the schema. Fluvius' NetFlex profile NL.2.4, for instance, sent
+//! `reportDescriptor.frequency` as an ISO 8601 duration where the schema says integer, and added a
 //! `required` flag that the schema does not define at all. Loosening [`ReportDescriptor`] to
 //! accommodate that would weaken every other deployment.
 //!
@@ -43,7 +43,10 @@ impl WireAdapter for Canonical {
     }
 }
 
-/// Adapter for Fluvius' NetFlex "OpenADR 3.1 Profile".
+/// Adapter for Fluvius' NetFlex "OpenADR 3.1 Profile", as published in NL.2.4 (April 2026).
+///
+/// NL.2.5 (October 2026) uses the schema's integer `frequency` and standard report payloads, so a
+/// client of the current profile does not need this.
 ///
 /// Handles two documented deviations:
 ///

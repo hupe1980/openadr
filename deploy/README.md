@@ -17,6 +17,25 @@ ask the VTN two questions.
 | `Dockerfile` | the VTN as one binary in a distroless image |
 | `compose.yaml` | both, wired together — a demonstration, not a production template |
 
+## The image on its own
+
+```console
+$ docker run --rm -p 127.0.0.1:3000:3000 ghcr.io/hupe1980/openadr \
+      dev --listen 0.0.0.0:3000 --ephemeral
+```
+
+`dev` prints its credentials and the inspector link. Binding `0.0.0.0` inside the container needs
+`--ephemeral`; publishing the port on `127.0.0.1` keeps it yours.
+
+For an interoperability harness, a VTN with known clients and no bootstrap step:
+
+```console
+$ docker run --rm -p 3000:3000 ghcr.io/hupe1980/openadr vtn --listen 0.0.0.0:3000 --ephemeral \
+      --client bl-1:bl-secret:bl --client ven-1:ven-secret:ven
+$ openadr conformance --url http://localhost:3000/openadr3/3.1.0 \
+      --bl-client bl-1:bl-secret --ven-client ven-1:ven-secret --ven-client-id ven-1
+```
+
 ## What the broker asks the VTN, and why it has to
 
 Per-VEN topics are only privacy if the broker refuses one VEN a subscription to another's. The

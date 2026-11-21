@@ -45,7 +45,7 @@
       <a class="button" href="{{ get_url(path='@/docs/_index.md') | safe }}">Documentation</a>
     </p>
     <div class="install">
-      <code>openadr = { version = "0.3", features = ["vtn", "postgres"] }</code>
+      <code>brew install hupe1980/tap/openadr &amp;&amp; openadr dev</code>
     </div>
   </div>
 </section>
@@ -102,14 +102,14 @@
     <article class="card">
       <h3>Interoperability is measured</h3>
       <p>
-        <code>openadr conformance</code> runs forty-eight black-box checks against <em>any</em>
-        OpenADR 3.1 VTN, each citing the sentence of the specification it tests. A check that could
-        not run is reported as skipped and never counted as a pass.
+        <code>openadr conformance</code> runs 52 black-box checks against <em>any</em> OpenADR 3.1
+        VTN, each citing the sentence of the specification it tests, and writes a report you can
+        send: one HTML page, a badge, and a GitHub Action for your own CI. A check that could not
+        run is a skip, never a pass.
       </p>
       <p class="note">
-        The suite is measured too: run against deliberately broken VTNs, 47 of the 48 checks are
-        proven able to fail. Run against another implementation, it found six required divergences
-        there — and two defects here.
+        The suite is measured too: run against deliberately broken VTNs, 51 of the 52 checks are
+        proven able to fail. It runs weekly against another implementation's current release.
       </p>
     </article>
 
@@ -201,34 +201,34 @@
 </section>
 
 <section class="wrap prose">
-  <h2>A VTN in one command</h2>
+  <h2>Running in under a minute</h2>
   {%- filter markdown(inline=false) | safe %}
 ```console
-$ cargo install openadr --features vtn,client,internal-auth,sqlite
+$ brew install hupe1980/tap/openadr      # or: cargo install openadr --features vtn,client,internal-auth,conformance
+$ openadr dev
+  VTN        http://127.0.0.1:3000/openadr3/3.1.0   (in memory — gone when you stop it)
+  Inspector  http://127.0.0.1:3000/_inspect#…
+  Seeded     dynamic-price   24 h price curve, rolls forward every 15 minutes
+             capacity-limit  an event in 2 minutes, and one for feeder-7 that ven-1 cannot see
 
-$ openadr vtn --database ./openadr.sqlite \
-      --client-hashed "bl-1:$(openadr hash-secret "$BL_SECRET"):bl" \
-      --client-hashed "ven-1:$(openadr hash-secret "$VEN_SECRET"):ven"
-2026-02-11T09:00:00Z  INFO openadr::vtn: VTN listening addr=0.0.0.0:3000 base_path=/openadr3/3.1.0
+$ source .openadr-dev.env
+$ openadr watch events                   # prints only when something changes
+$ openadr trigger event                  # a capacity limit, one minute out
+$ openadr conformance --report report.html
 ```
   {% endfilter %}
   <p>
-    That is a complete OpenADR 3.1 VTN: every endpoint, the OAuth2 client-credentials grant with
-    Argon2id-hashed secrets, object privacy, durable storage, a notification queue,
-    <code>GET /metrics</code> and a dead-letter view — one binary and one file. Swap
-    <code>--database</code> for a <code>postgres://</code> URL and the same binary is the shared,
-    multi-instance deployment.
+    A VTN with a business-logic and a VEN client, data that moves, and the inspector — a page that
+    shows the timeline, which events the VEN can and cannot see, and every delivery. Every error a
+    command prints ends with <code>openadr explain</code> and the name to look up. CI holds this to
+    under 60 seconds from start to a VEN reading a price.
   </p>
   <p>
-    The same binary is also the client, so nothing above needs a second tool:
+    For a real deployment, <code>openadr vtn --database ./openadr.sqlite --client-hashed …</code> is
+    every endpoint, an OAuth2 grant with Argon2id-hashed secrets, object privacy, durable storage and
+    a notification queue in one binary; a <code>postgres://</code> URL makes it the multi-instance
+    one.
   </p>
-  {%- filter markdown(inline=false) | safe %}
-```console
-$ openadr post programs --data '{"programName":"grid-aware-charging"}'
-$ openadr get events --program prg-00000001 --active
-$ openadr watch events --targets group1        # prints only when something changes
-```
-  {% endfilter %}
   <p><a class="more" href="{{ get_url(path='@/docs/getting-started.md') | safe }}">Walk through it →</a></p>
 </section>
 
@@ -276,14 +276,15 @@ loop {
       <tr><td>Transport security — TLS 1.2+, and a client CA that gates the connection</td><td><code>tls</code></td><td class="yes">Complete</td></tr>
       <tr><td>OpenAPI — <code>GET /openapi.json</code>, narrowed to what this VTN serves</td><td><code>vtn</code></td><td class="yes">Complete</td></tr>
       <tr><td>Report retention — bounded, oldest-first, off by default</td><td><code>vtn</code></td><td class="yes">Complete</td></tr>
-      <tr><td>Conformance suite — 48 clause-citing checks against any VTN</td><td><code>conformance</code></td><td class="part">One reading, taken by hand</td></tr>
+      <tr><td>Conformance suite — 52 clause-citing checks against any VTN; HTML report, badge, GitHub Action</td><td><code>conformance</code></td><td class="yes">Complete; weekly against a peer</td></tr>
+      <tr><td>Developer tools — <code>openadr dev</code>, the inspector, <code>openadr trigger</code>, <code>openadr explain</code></td><td>the binary</td><td class="yes">Complete</td></tr>
       <tr><td>Certification against the Alliance test tool</td><td>—</td><td class="no">Not attempted</td></tr>
     </tbody>
   </table>
   <p class="note">
-    481 tests, including 19 property tests and a 57-behaviour storage conformance suite that all
-    three backends run. Clippy, rustfmt and rustdoc clean at <code>-D warnings</code>; every feature
-    combination and both <code>no_std</code> targets built in CI.
+    Property tests, a storage conformance suite all three backends run, and clippy, rustfmt and
+    rustdoc clean at <code>-D warnings</code>; every feature combination and both
+    <code>no_std</code> targets built in CI.
   </p>
   <p><a class="more" href="{{ get_url(path='@/docs/status.md') | safe }}">The full picture, including what is missing →</a></p>
 </section>
@@ -291,7 +292,7 @@ loop {
 <section class="wrap prose closing">
   <h2>Start here</h2>
   <ul class="next">
-    <li><a href="{{ get_url(path='@/docs/getting-started.md') | safe }}"><strong>Getting started</strong></a> — a running VTN and a client talking to it, in about five minutes.</li>
+    <li><a href="{{ get_url(path='@/docs/getting-started.md') | safe }}"><strong>Getting started</strong></a> — <code>openadr dev</code>, the inspector and a VEN, in a minute; then a durable VTN.</li>
     <li><a href="{{ get_url(path='@/docs/what-is-openadr.md') | safe }}"><strong>What OpenADR is</strong></a> — the six objects, targets, intervals and reports, if the protocol is new to you.</li>
     <li><a href="{{ get_url(path='@/docs/object-privacy.md') | safe }}"><strong>Object privacy</strong></a> — how a VEN is granted visibility, and why it never sees the other groups. Worth reading before a pilot.</li>
     <li><a href="{{ get_url(path='@/docs/security.md') | safe }}"><strong>Security model</strong></a> — what a VEN structurally cannot do, and what is left to your deployment.</li>

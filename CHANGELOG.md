@@ -7,6 +7,58 @@ that a minor release may break.
 Entries cite `D-nnn`: the project's architecture decision records, which carry the reasoning and the
 alternative each change rejected. Unfinished work is tracked separately and does not appear here.
 
+## [0.5.0] — 2026-11-21
+
+The first five minutes. **Breaking**, deliberately — pre-1.0 changes are made in place.
+
+### Added
+
+- **`openadr dev`.** A VTN on loopback with a business-logic and a VEN client, a per-run token key,
+  the inspector, and seeded data that moves: a 24-hour price curve rolled forward every quarter hour,
+  a capacity event two minutes out, and one for a feeder the VEN cannot see. Credentials are printed
+  and written to `.openadr-dev.env` (mode `0600`), which every command reads. A non-loopback
+  `--listen` needs `--ephemeral`.
+- **`openadr trigger event | cancel | report`** — make something happen on a dev VTN.
+- **The inspector** (`openadr vtn --inspector`, on in `dev`): `/_inspect` shows a timeline of every
+  event against *now*, which events a VEN can and cannot see — asked of the VTN with the VEN's own
+  credential — and deliveries with a retry button. Three static files, no new endpoint, a strict
+  Content-Security-Policy. `VtnConfig::inspector`.
+- **`openadr explain <problem-type | check-id>`**, offline. Every CLI error carrying one of this
+  VTN's problem types ends with the command to run.
+- **A conformance report to share.** `--report report.html` (one page, failures first with their
+  clause; no script; light, dark and print) and `--badge badge.json` (shields.io endpoint);
+  `Report::to_html` and `Report::badge`.
+- **A GitHub Action**: `uses: hupe1980/openadr@v0.5.0` runs the suite against your VTN in CI with
+  a checksum-verified binary, a job summary and the report as an artifact.
+- **Write-side privacy checks**: a VEN can neither replace nor delete another client's VEN object,
+  resource or subscription (required), and the refusal is a `404` (recommended). 52 checks; 51 proven
+  able to fail.
+- **Homebrew**: `brew install hupe1980/tap/openadr`.
+- `Display` for `Value` and `ValuesMap` (`PRICE 0.1785`).
+
+### Changed
+
+- **Breaking:** `model::problem::PROBLEM_TYPES` is replaced by `PROBLEMS`, carrying each type's
+  status and meaning; `problem_type()` and `slug_of()` look one up. The published registry is held
+  to the same text.
+- `openadr conformance` reads `OPENADR_CLIENT_ID`/`_SECRET` and `OPENADR_VEN_CLIENT_ID`/`_SECRET`
+  when no credential flag is given; `examples/ven` reads `OPENADR_URL`, the VEN credentials and
+  `OPENADR_VEN_TARGETS`.
+- **Fluvius NetFlex NL.2.5** moved the profile to OAuth2 through Entra ID and standard report
+  payloads; `adapt::Fluvius` is documented as the NL.2.4 adapter it is.
+- **The specification is pinned** (contributor tooling): `spec.lock` names the mirror commit that
+  every drift check, `codegen` and `trace` read, and they refuse any other. `cargo xtask spec-sync`
+  reaches it from any clean state — including the history the mirror rewrote on 2026-09-30 — and
+  `--update` moves it, printing what changed. `cargo xtask inputs` reports weekly which external
+  inputs have moved.
+- **The licence statement is scoped**: only the specification's OpenAPI document is Apache-2.0,
+  and it is the only part served or committed here.
+
+### Fixed
+
+- **An unreachable VTN is not a non-conformant one.** A request that never arrived is a skip; a run
+  in which no required check could be attempted says *not measured* and exits `2`.
+
 ## [0.4.0] — 2026-09-14
 
 The MQTT transport is this crate's own, and a sixth audit's findings. **Breaking**, deliberately.

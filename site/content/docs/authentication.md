@@ -5,8 +5,8 @@ weight = 40
 +++
 
 Deployments disagree about identity, and the disagreement is not academic. Belgian Fluvius'
-NetFlex profile forbids OAuth2 outright and requires mutual TLS. Californian price servers are
-anonymous. Dutch grid-aware charging uses Keycloak. A VTN that assumes one of those cannot serve the
+NetFlex profile authenticates through Microsoft Entra ID with a certificate credential — and its
+previous version forbade OAuth2 and required mutual TLS. Californian price servers are anonymous. Dutch grid-aware charging uses Keycloak. A VTN that assumes one of those cannot serve the
 others.
 
 So authentication is a trait. `Authenticator` resolves a credential to a `Principal` — a client id
@@ -196,10 +196,8 @@ Not an OAuth2 grant — a fixed table, compared in constant time. Two situations
 answer:
 
 - **Development.** No authorization server to stand up.
-- **A gateway that already authenticated the caller.** Fluvius' NetFlex profile authenticates with
-  mutual TLS and does not use OAuth2 at all; a TLS-terminating proxy that maps a client certificate
-  to a token is how to bridge that. The VTN does not terminate TLS, so it cannot check a certificate
-  itself.
+- **A gateway that already authenticated the caller** — a TLS-terminating proxy that maps a client
+  certificate to a token, for a deployment that authenticates with mutual TLS rather than OAuth2.
 
 ## Anonymous
 

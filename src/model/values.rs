@@ -113,6 +113,19 @@ impl Value {
     }
 }
 
+/// The value as a person reads it: `0.1785`, `true`, `BAD`, `(1, 2)`.
+impl fmt::Display for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Value::Integer(n) => write!(f, "{n}"),
+            Value::Number(d) => write!(f, "{}", d.normalize()),
+            Value::Boolean(b) => write!(f, "{b}"),
+            Value::String(s) => f.write_str(s),
+            Value::Point(p) => write!(f, "({}, {})", p.x.normalize(), p.y.normalize()),
+        }
+    }
+}
+
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -583,6 +596,18 @@ pub struct ValuesMap {
     pub values: Vec<Value>,
 }
 
+/// `PRICE 0.1785`, or `PRICE 0.17, 0.18` for several values.
+impl fmt::Display for ValuesMap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.value_type.as_str())?;
+        for (n, value) in self.values.iter().enumerate() {
+            f.write_str(if n == 0 { " " } else { ", " })?;
+            write!(f, "{value}")?;
+        }
+        Ok(())
+    }
+}
+
 impl ValuesMap {
     /// Build a values map.
     pub fn new(value_type: PayloadType, values: Vec<Value>) -> Self {
@@ -595,6 +620,21 @@ impl ValuesMap {
             value_type,
             values: crate::std_shim::vec![value.into()],
         }
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    #[test]
+    fn values_read_as_a_person_writes_them() {
+        let price = ValuesMap::new(
+            PayloadType::new("PRICE").unwrap(),
+            vec![Value::Number(Decimal::new(17850, 5)), Value::Integer(2)],
+        );
+        assert_eq!(price.to_string(), "PRICE 0.1785, 2");
+        assert_eq!(Value::Boolean(true).to_string(), "true");
     }
 }
 

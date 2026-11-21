@@ -1,0 +1,8 @@
+# The OpenADR 3 specification mirror every drift check, `codegen` and `trace` read.
+#
+# `cargo xtask spec-sync` puts the mirror at exactly this commit; `cargo xtask spec-sync --update`
+# moves it to the mirror's head and prints what changed. A pin, because the mirror rewrote its
+# history once (2026-09-30) and nothing here noticed: a check that reads whatever the default
+# branch says today passes against a document nobody reviewed.
+url = "https://github.com/grid-coordination/openadr3-specification"
+commit = "17b91725e0f07203574ddc946e28def31cb11e44"

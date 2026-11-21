@@ -1,0 +1,141 @@
+# Run the open OpenADR 3.1 conformance suite against a VTN, in your own CI.
+#
+#   - uses: hupe1980/openadr@v0.5.0
+#     with:
+#       url: http://localhost:3000/openadr3/3.1.0
+#       bl-client: bl-1:${{ secrets.BL_SECRET }}
+#       ven-client: ven-1:${{ secrets.VEN_SECRET }}
+#       ven-client-id: ven-1
+#
+# The step fails when a required check fails, writes a job summary, and uploads report.html,
+# badge.json and report.json as the artifact `openadr-conformance`.
+#
+# Every input reaches the scripts below through `env` only, never by `${{ }}` interpolation into a
+# `run:` block, so an input cannot become shell code; `tests/action.rs` holds that.
+name: OpenADR conformance
+description: Measure an OpenADR 3.1 VTN with the open conformance suite (52 clause-citing checks)
+author: hupe1980
+branding:
+  icon: check-circle
+  color: green
+
+inputs:
+  url:
+    description: Base URL of the VTN, including the base path (e.g. http://localhost:3000/openadr3/3.1.0)
+    required: true
+  bl-token:
+    description: A business-logic bearer token
+    required: false
+  bl-client:
+    description: Or business-logic client credentials, as id:secret
+    required: false
+  ven-token:
+    description: A VEN bearer token
+    required: false
+  ven-client:
+    description: Or VEN client credentials, as id:secret
+    required: false
+  ven-client-id:
+    description: The clientID the VEN credential authenticates as (needed for the privacy checks)
+    required: false
+  strict:
+    description: Fail on any failed check, not only a required one
+    required: false
+    default: "false"
+  version:
+    description: The openadr release to run (a tag such as v0.5.0, or "latest")
+    required: false
+    default: latest
+
+outputs:
+  conformant:
+    description: '"true" when no required check failed'
+    value: ${{ steps.run.outputs.conformant }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install openadr
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        VERSION: ${{ inputs.version }}
+        RUNNER_OS_NAME: ${{ runner.os }}
+        RUNNER_ARCH_NAME: ${{ runner.arch }}
+      run: |
+        set -euo pipefail
+        case "$RUNNER_OS_NAME/$RUNNER_ARCH_NAME" in
+          Linux/X64)   target=x86_64-unknown-linux-musl ;;
+          Linux/ARM64) target=aarch64-unknown-linux-musl ;;
+          macOS/ARM64) target=aarch64-apple-darwin ;;
+          *) echo "::error::openadr ships binaries for Linux x64, Linux arm64 and macOS arm64, not $RUNNER_OS_NAME/$RUNNER_ARCH_NAME"; exit 1 ;;
+        esac
+        if [ "$VERSION" = latest ]; then
+          tag="$(gh release view --repo hupe1980/openadr --json tagName --jq .tagName)"
+        else
+          tag="$VERSION"
+        fi
+        dir="$RUNNER_TEMP/openadr"
+        mkdir -p "$dir"
+        archive="openadr-$tag-$target.tar.gz"
+        gh release download "$tag" --repo hupe1980/openadr --dir "$dir" \
+          --pattern "$archive" --pattern "$archive.sha256"
+        # The archive is checked against the release's own checksum before anything is extracted.
+        (cd "$dir" && if command -v sha256sum >/dev/null; then sha256sum -c "$archive.sha256"; else shasum -a 256 -c "$archive.sha256"; fi)
+        tar -xzf "$dir/$archive" -C "$dir"
+        echo "$dir" >> "$GITHUB_PATH"
+        "$dir/openadr" version
+
+    - name: Run the suite
+      id: run
+      shell: bash
+      env:
+        OPENADR_URL: ${{ inputs.url }}
+        OPENADR_TOKEN: ${{ inputs.bl-token }}
+        IN_BL_CLIENT: ${{ inputs.bl-client }}
+        IN_VEN_TOKEN: ${{ inputs.ven-token }}
+        IN_VEN_CLIENT: ${{ inputs.ven-client }}
+        IN_VEN_CLIENT_ID: ${{ inputs.ven-client-id }}
+        IN_STRICT: ${{ inputs.strict }}
+      run: |
+        set -uo pipefail
+        out="$RUNNER_TEMP/openadr-conformance"
+        mkdir -p "$out"
+        args=(conformance --json --report "$out/report.html" --badge "$out/badge.json")
+        [ -n "$IN_BL_CLIENT" ] && args+=(--bl-client "$IN_BL_CLIENT")
+        [ -n "$IN_VEN_TOKEN" ] && args+=(--ven-token "$IN_VEN_TOKEN")
+        [ -n "$IN_VEN_CLIENT" ] && args+=(--ven-client "$IN_VEN_CLIENT")
+        [ -n "$IN_VEN_CLIENT_ID" ] && args+=(--ven-client-id "$IN_VEN_CLIENT_ID")
+        [ "$IN_STRICT" = true ] && args+=(--strict)
+        openadr "${args[@]}" > "$out/report.json"
+        status=$?
+        if [ "$(jq -r .conformant "$out/report.json" 2>/dev/null)" = true ]; then
+          echo "conformant=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "conformant=false" >> "$GITHUB_OUTPUT"
+        fi
+        {
+          echo "## OpenADR conformance — $(jq -r .target "$out/report.json")"
+          echo
+          echo "| | passed | failed | skipped |"
+          echo "|---|---|---|---|"
+          for sev in required recommended extension; do
+            jq -r --arg s "$sev" '[.findings[] | select(.severity == $s)] |
+              select(length > 0) |
+              "| \($s) | \(map(select(.outcome=="passed"))|length) | \(map(select(.outcome=="failed"))|length) | \(map(select(.outcome=="skipped"))|length) |"' "$out/report.json"
+          done
+          echo
+          jq -r '.findings[] | select(.outcome == "failed") |
+            "- **\(.id)** (\(.severity)) — \(.title) `\(.clause)`<br>\(.detail | gsub("\n"; " "))"' "$out/report.json"
+          echo
+          echo "Full report: the \`openadr-conformance\` artifact. \`openadr explain <check-id>\` explains any check."
+        } >> "$GITHUB_STEP_SUMMARY"
+        exit $status
+
+    - name: Upload the report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: openadr-conformance
+        path: ${{ runner.temp }}/openadr-conformance
+        if-no-files-found: ignore

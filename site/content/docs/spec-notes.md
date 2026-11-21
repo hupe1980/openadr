@@ -11,8 +11,9 @@ do, and why.
 If you are integrating against a VTN built on this crate, this is the page that tells you where its
 behaviour is a choice rather than a requirement.
 
-Sources are the mirror in `specs/openadr3-specification/`: `openadr3.yaml` (the OpenAPI document,
-normative), `Definition.md` and `User_Guide.md`. The wire model tracks **3.1.0**, the released
+Sources are the [public mirror](https://github.com/grid-coordination/openadr3-specification) of the
+specification: `openadr3.yaml` (the OpenAPI document, normative), `Definition.md` and
+`User_Guide.md`. The wire model tracks **3.1.0**, the released
 version; where the 3.1.1 development copy corrects 3.1.0 rather than changing it, that is noted
 below and both shapes are accepted.
 

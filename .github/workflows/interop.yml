@@ -1,0 +1,48 @@
+# Weekly: this conformance suite against the peer VTN's current release, in containers.
+#
+# A reading not on a schedule decays into a claim. This never fails on the peer's findings — those
+# are the output — only when nothing was measured. Read-only, and no secrets: the peer image runs on
+# this runner, so the job holds nothing worth taking (interop-schedule/SR-001).
+name: Interop
+
+on:
+  schedule:
+    - cron: "41 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  peer:
+    name: Against the peer VTN
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Measure
+        env:
+          OPENADR_INTEROP_JSON: interop.json
+        run: cargo test --all-features --test interop -- --ignored --nocapture
+      - name: Summarise
+        if: always()
+        run: |
+          [ -f interop.json ] || { echo "Nothing was measured." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          {
+            echo "## Interop — $(date -u +%F) — $(jq -r .target interop.json)"
+            echo
+            for sev in required recommended extension; do
+              jq -r --arg s "$sev" '[.findings[] | select(.severity == $s)] | select(length > 0) |
+                "- \($s): \(map(select(.outcome=="passed"))|length) passed, \(map(select(.outcome=="failed"))|length) failed, \(map(select(.outcome=="skipped"))|length) skipped"' interop.json
+            done
+            echo
+            jq -r '.findings[] | select(.outcome == "failed") | "- `\(.id)` (\(.severity)) — \(.title)"' interop.json
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: interop
+          path: interop.json
+          if-no-files-found: ignore

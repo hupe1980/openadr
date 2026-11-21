@@ -1,28 +1,60 @@
 +++
 title = "Getting started"
-description = "A running OpenADR 3.1 VTN with durable storage and OAuth2, a programme, an event, and a VEN reading it — in about five minutes."
+description = "A working OpenADR 3.1 stack in one command, then a durable VTN with OAuth2, a programme, a price curve and a VEN reading it."
 weight = 10
 +++
 
-By the end of this you will have a VTN with durable storage and a real OAuth2 grant, a programme
-with a price curve on it, and a Rust client reading that curve back and resolving it into absolute
-time.
-
 If the words *VTN*, *VEN*, *programme* and *event* are new, read
-[What OpenADR is](@/docs/what-is-openadr.md) first — it takes about fifteen minutes and the rest of
-this page will make more sense.
+[What OpenADR is](@/docs/what-is-openadr.md) first.
 
-## Install
+## In one minute
 
 ```console
-$ cargo install openadr --features vtn,internal-auth,sqlite
+$ brew install hupe1980/tap/openadr
+$ openadr dev
 ```
 
-Those three features are the "one binary, one file" build: the server, its own OAuth2 token
-endpoint, and SQLite storage. Other combinations are on the [status page](@/docs/status.md); the
-crate compiles down to just the wire model and domain core if that is all you need.
+`openadr dev` starts a VTN on `127.0.0.1:3000` with two clients — `bl-1` (business logic) and
+`ven-1` (a VEN) — and seeds it: a 24-hour price curve that rolls forward every quarter hour, a
+capacity limit two minutes out, and one aimed at a feeder `ven-1` is not granted. It prints the
+credentials and writes them to `.openadr-dev.env`, which every `openadr` command reads. Data is in
+memory unless you add `--database`.
 
-## Start a VTN
+In a second terminal:
+
+```console
+$ source .openadr-dev.env
+$ openadr get events
+$ openadr watch events                      # prints only when something changes
+$ openadr trigger event                     # a 5 kW limit, one minute out; also: cancel, report
+$ openadr conformance --report report.html  # 52 checks against this VTN
+```
+
+Open the **Inspector** link the banner printed. It shows the timeline against *now*, which events
+the VEN can and cannot see (asked of the VTN with the VEN's own credential), and every delivery.
+
+A VEN, from a checkout of the repository:
+
+```console
+$ cargo run --features ven --example ven
+in force from 2026-11-21T10:15:00Z until 2026-11-21T10:30:00Z: PRICE 0.1785
+```
+
+## A durable VTN, step by step
+
+The rest of this page builds the same thing by hand: durable storage, a real OAuth2 grant, a
+programme, a price curve, and a Rust client resolving it into absolute time.
+
+```console
+$ cargo install openadr --features vtn,client,internal-auth,sqlite
+```
+
+Those features are the "one binary, one file" build: the server, its own OAuth2 token endpoint,
+SQLite storage and the client commands. Other combinations are on the
+[status page](@/docs/status.md); the crate compiles down to just the wire model and domain core if
+that is all you need.
+
+### Start a VTN
 
 ```console
 $ export BL_SECRET=$(openssl rand -hex 24)
@@ -48,7 +80,7 @@ typed. `openadr vtn --help` lists every option.
 > for a first look on `localhost`, and the binary refuses to bind a public address that way unless
 > you pass `--ephemeral` — a VTN that silently forgets its programmes should be a deliberate choice.
 
-## Get a token
+### Get a token
 
 ```console
 $ TOKEN=$(curl -s \
@@ -70,7 +102,7 @@ $ curl -s localhost:3000/openadr3/3.1.0/auth/server
 client discovers where to authenticate, so it is itself unauthenticated. See
 [Authentication](@/docs/authentication.md) for the other backends.
 
-## Create a programme
+### Create a programme
 
 A **programme** is the container for everything else: a tariff, a flexibility product, a curtailment
 scheme. Events belong to exactly one.
@@ -88,7 +120,7 @@ $ curl -s -X POST localhost:3000/openadr3/3.1.0/programs \
 and both timestamps; a request body cannot even name them, because the request and response are
 different types.
 
-## Publish a price curve
+### Publish a price curve
 
 ```console
 $ curl -s -X POST localhost:3000/openadr3/3.1.0/events \
@@ -116,7 +148,7 @@ type, so several values mean the interval subdivides into that many equal parts 
 hour are three twenty-minute sub-intervals. Which payload types are scalar comes from the Alliance's
 own enumeration files, compiled into the crate.
 
-## Read it back as a schedule
+### Read it back as a schedule
 
 ```rust
 use openadr::client::{Client, Query, VirtualEndNode};
@@ -162,12 +194,14 @@ $ cargo run --features vtn --example vtn
 $ cargo run --features ven --example ven   # in another terminal
 ```
 
-## Without writing any Rust
+### Without writing any Rust
 
-The same binary is the client, so everything above is one command each:
+The same binary is the client, so everything above is one command each — it does the token grant
+itself:
 
 ```console
-$ export OPENADR_URL=http://localhost:3000/openadr3/3.1.0 OPENADR_TOKEN=$TOKEN
+$ export OPENADR_URL=http://localhost:3000/openadr3/3.1.0
+$ export OPENADR_CLIENT_ID=bl-1 OPENADR_CLIENT_SECRET=$BL_SECRET
 $ openadr post programs --data '{"programName":"day-ahead"}'
 $ openadr get events --program prg-00000001 --active
 $ openadr watch events --interval 10        # prints only when something changes

@@ -41,8 +41,10 @@ use std::fmt;
 
 use crate::client::{BusinessLogic, Client, ClientError, VirtualEndNode};
 
+mod report;
 mod suite;
 
+pub use report::RunMeta;
 pub use suite::checks;
 
 /// Prefix for every object the suite creates, so a run is identifiable and cleanable.
@@ -235,7 +237,13 @@ impl fmt::Display for Report {
             )?;
         }
         writeln!(f)?;
-        if self.is_conformant() {
+        let (passed, failed, _) = self.tally(Severity::Required);
+        if passed + failed == 0 {
+            writeln!(
+                f,
+                "Nothing was measured: no required check could be attempted."
+            )
+        } else if self.is_conformant() {
             writeln!(f, "No required check failed.")
         } else {
             writeln!(

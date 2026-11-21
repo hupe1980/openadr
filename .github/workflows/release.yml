@@ -66,16 +66,16 @@ jobs:
           fi
           echo "version=$crate" >> "$GITHUB_OUTPUT"
 
-      # Packaging is where `specs/` and `concepts/` would leak into the `.crate` if the `exclude`
-      # list in `Cargo.toml` ever stopped covering them. `specs/` is the OpenADR Alliance's
-      # publication set, which this project fetches rather than vendors; republishing it under this
-      # crate's name is a redistribution it has chosen not to make.
+      # Packaging is where `concepts/`, `specs/` and the Spec Kit tree would leak into the `.crate`
+      # if the `exclude` list in `Cargo.toml` ever stopped covering them. `concepts/reference/` is
+      # the OpenADR Alliance's publication set, which this project fetches rather than vendors;
+      # republishing it under this crate's name is a redistribution it has chosen not to make.
       - name: The package holds only the library
         run: |
           cargo package --list > /tmp/packaged.txt
-          if grep -qE '^(specs|concepts|site|deploy|scripts|\.github)/' /tmp/packaged.txt; then
+          if grep -qE '^(specs|concepts|\.specify|\.claude|site|deploy|scripts|packaging|\.github)/' /tmp/packaged.txt; then
             echo "::error::the .crate would ship files that are not part of the library"
-            grep -E '^(specs|concepts|site|deploy|scripts|\.github)/' /tmp/packaged.txt
+            grep -E '^(specs|concepts|\.specify|\.claude|site|deploy|scripts|packaging|\.github)/' /tmp/packaged.txt
             exit 1
           fi
           wc -l < /tmp/packaged.txt
@@ -88,14 +88,25 @@ jobs:
     needs: verify
     runs-on: ubuntu-latest
     # The only step in this workflow that cannot be undone, so it runs alone and first.
+    #
+    # Trusted Publishing: no token is stored. The job's GitHub OIDC token is exchanged for a
+    # short-lived crates.io token, revoked when the job ends. crates.io → openadr → Settings →
+    # Trusted Publishing names this repository, `release.yml` and the environment `crates-io`.
+    # Actions are pinned by commit because this job holds that token.
     environment: crates-io
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth
       - name: Publish
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish
 
   binaries:
@@ -285,8 +296,9 @@ jobs:
             [what is and is not implemented](https://hupe1980.github.io/openadr/docs/status/).
 
             ```console
+            brew install hupe1980/tap/openadr && openadr dev
             cargo install openadr --version ${{ needs.verify.outputs.version }} \
-                --features vtn,client,internal-auth,sqlite
+                --features vtn,client,internal-auth,sqlite,conformance
             docker pull ghcr.io/${{ github.repository }}:${{ needs.verify.outputs.version }}
             ```
 
@@ -297,3 +309,65 @@ jobs:
                 --certificate-identity-regexp '^https://github.com/${{ github.repository }}/' \
                 --certificate-oidc-issuer https://token.actions.githubusercontent.com
             ```
+
+  # Formula/openadr.rb in hupe1980/homebrew-tap. The `homebrew` environment holds HOMEBREW_APP_ID
+  # and HOMEBREW_APP_PRIVATE_KEY: a GitHub App installed on the tap only, with contents: write.
+  # Actions are pinned by commit because this job holds that token. Pre-releases (a `-` in the tag)
+  # do not move the formula.
+  tap:
+    name: Homebrew tap
+    needs: [verify, binaries]
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    environment: homebrew
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The per-archive checksums `upload-rust-binary-action` attached to the release.
+      - name: Collect the checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --pattern '*.tar.gz.sha256' --dir sums
+          cat sums/*.sha256 > checksums.txt
+          cat checksums.txt
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+        id: app-token
+        with:
+          app-id: ${{ secrets.HOMEBREW_APP_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: hupe1980
+          repositories: homebrew-tap
+          permission-contents: write
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: hupe1980/homebrew-tap
+          token: ${{ steps.app-token.outputs.token }}
+          path: tap
+          persist-credentials: true
+      - name: Update the formula
+        env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          mkdir -p tap/Formula
+          packaging/homebrew/formula.sh "$VERSION" checksums.txt > tap/Formula/openadr.rb
+          cd tap
+          if [ -n "$(git status --porcelain)" ]; then
+            git config user.name "openadr release"
+            git config user.email "openadr-release@users.noreply.github.com"
+            git add Formula/openadr.rb
+            git commit -m "openadr $VERSION"
+            git push
+          fi
+
+  # The published formula installs and passes its own test.
+  brew:
+    name: Homebrew install
+    needs: [verify, tap]
+    runs-on: macos-latest
+    steps:
+      - env:
+          VERSION: ${{ needs.verify.outputs.version }}
+        run: |
+          brew install hupe1980/tap/openadr
+          brew test openadr
+          openadr version | grep -q "^openadr $VERSION "

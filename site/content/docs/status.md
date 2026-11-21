@@ -25,21 +25,18 @@ mistaken for a bug.
 | Deployment — EMQX and Mosquitto configurations, a compose file, an assertion script | — | Complete |
 | Local discovery — `_openadr3._tcp` advertised by the VTN, browsed by `openadr discover` | `mdns` | Complete |
 | VEN runtime — registration, conditional sync, timelines, reports, clock-skew guard, push hints | `ven` | Complete |
-| Command line — `openadr vtn`, and `get`/`post`/`put`/`delete`/`watch` | `vtn`, `client` | Complete |
+| Command line — `openadr vtn`, `dev`, `trigger`, `explain`, and `get`/`post`/`put`/`delete`/`watch` | `vtn`, `client` | Complete |
+| Inspector — timeline, who sees what, deliveries; `/_inspect` | `vtn` | Complete |
 | Observability — `GET /metrics`, dead-letter and subscriber-health views, retry | `vtn` | Complete |
 | Transport security — TLS 1.2+ with ALPN, and a client CA that gates the connection | `tls` | Complete |
 | OpenAPI — `GET /openapi.json`, narrowed to what this deployment serves, named by the mDNS record | `vtn` | Complete |
-| Conformance kit — black-box, 48 clause-citing checks, runs against any VTN; 47 of them proven able to fail | `conformance` | Built; one reading against another implementation |
+| Conformance kit — black-box, 52 clause-citing checks against any VTN, 51 proven able to fail; HTML report, badge, GitHub Action | `conformance` | Complete; weekly against another implementation |
 | External auth — end-to-end against a real Keycloak: realm, client-credentials grant, token, write | `external-auth` | Complete |
 
-**526 tests**: 322 unit, 71 driving the real HTTP router, 20 over the code generator, the drift
-checks and the design-document checks in `xtask`, 17 property tests, 15 running the VEN runtime
-against a real VTN, 14 in the CLI, 13 running the client against one, 11 delivering webhooks over
-real sockets, 11 doctests, 10 validating JWTs against a real JWKS, 8 running the conformance suite,
-6 publishing to a broker over a real socket, 6 completing real TLS handshakes, one against a real
-Keycloak end to end, and one mDNS round trip over a real multicast group. Three of the unit tests are the storage conformance suite,
-which is 57 behaviours run against each backend — PostgreSQL included, which starts its own container
-when no server is configured rather than skipping.
+Tests sit at the seams: the real HTTP router, the VEN runtime and the client against a real VTN,
+webhooks over real sockets, JWTs against a real JWKS, a real broker, real TLS handshakes, a real
+Keycloak, a real multicast group, and a storage conformance suite every backend runs — PostgreSQL
+included, which starts its own container rather than skipping.
 
 Three more are `#[ignore]`d, because they measure rather than assert: `load` (write latency, broker
 fan-out, drain rate, report ingest with and without a broker behind it), `interop` (this suite
@@ -48,7 +45,8 @@ against another VTN) and `broker` (object privacy across a real EMQX, from `depl
 `cargo test` with nothing configured starts its own PostgreSQL and Keycloak containers; both skip,
 loudly, on a machine with no Docker.
 
-CI holds: `cargo fmt --check`; clippy with `-D warnings`; rustdoc with `-D warnings`;
+CI holds: the quickstart, timed — `openadr dev` to a VEN reading a price in under 60 seconds;
+`cargo fmt --check`; clippy with `-D warnings`; rustdoc with `-D warnings`;
 `thumbv7em-none-eabihf` and `wasm32-unknown-unknown` builds (and the webhook signature verifier on
 bare metal); every feature combination via `cargo hack`; the payload-table drift check *and* the
 wire-model check *and* the OpenAPI copy against `openadr3.yaml`; `cargo deny` over advisories,
@@ -98,10 +96,8 @@ client speaks 3.1.1, which is the version that is required.
 
 ## Known limitations
 
-**Interoperability has one reading.** [The conformance suite](@/docs/conformance.md) has been run
-against another implementation once, and `tests/interop.rs` reproduces it: 30 of 36 attempted
-required checks passed there, six failed, and the run found two defects here as well.
-That is a data point, not a measurement — nothing runs it on a schedule or against more peers, and
+**Interoperability is measured against one peer.** [The conformance suite](@/docs/conformance.md)
+runs weekly against one other implementation's current release; more peers are the next step, and
 the checks are still written from this project's reading of the specification.
 
 **Nothing is certified.** Certification uses a closed online test tool. Several behaviours it checks

@@ -173,8 +173,7 @@ impl<R: Role> ClientBuilder<R> {
     /// Present a fixed bearer token instead of minting one.
     ///
     /// For deployments where the credential does not come from an OAuth2 exchange: a pre-shared
-    /// token, or a gateway that has already authenticated the caller — Fluvius' NetFlex profile, for
-    /// instance, authenticates with mutual TLS and does not use OAuth2 at all.
+    /// token, or a gateway that has already authenticated the caller with mutual TLS.
     pub fn bearer_token(mut self, token: impl Into<String>) -> Self {
         self.bearer_token = Some(token.into());
         self
@@ -194,8 +193,8 @@ impl<R: Role> ClientBuilder<R> {
 
     /// Speak to a peer that bends the schema.
     ///
-    /// Deployed profiles deviate — Fluvius' NetFlex sends `reportDescriptor.frequency` as an ISO
-    /// duration where the schema says integer. An [adapter](crate::model::adapt) rewrites the JSON
+    /// Deployed profiles deviate — Fluvius' NetFlex NL.2.4 sent `reportDescriptor.frequency` as an
+    /// ISO duration where the schema says integer. An [adapter](crate::model::adapt) rewrites the JSON
     /// on the way out and back, so the deviation is a named, tested transformation at the edge
     /// rather than a hole in [`ReportDescriptor`](crate::model::ReportDescriptor) that every other
     /// deployment would also have to live with.

@@ -233,11 +233,11 @@ mod tests {
     /// One of every variant, so the registry and the code cannot drift apart silently.
     ///
     /// A `type` URI is only worth minting if it resolves, and it resolves because
-    /// `PROBLEM_TYPES` is published as a redirect per slug. A variant whose slug is missing here
+    /// `PROBLEMS` is published as a redirect per slug. A variant whose slug is missing here
     /// would serve clients a URI that documents nothing.
     #[test]
     fn every_variant_mints_a_published_type() {
-        use crate::model::{ObjectId, ObjectType, problem::PROBLEM_TYPES};
+        use crate::model::{ObjectId, ObjectType, problem::problem_type};
 
         let id = ObjectId::new("object-0000000000").unwrap();
         let errors = [
@@ -275,8 +275,8 @@ mod tests {
         for error in &errors {
             let slug = error.slug();
             assert!(
-                PROBLEM_TYPES.contains(&slug),
-                "{slug} is minted but not published; add it to PROBLEM_TYPES and the registry page"
+                problem_type(slug).is_some(),
+                "{slug} is minted but not published; add it to PROBLEMS and the registry page"
             );
         }
     }

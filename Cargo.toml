@@ -3,25 +3,25 @@ members = ["xtask"]
 resolver = "3"
 
 [workspace.package]
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/hupe1980/openadr"
-homepage = "https://github.com/hupe1980/openadr"
+homepage = "https://hupe1980.github.io/openadr/"
 authors = ["The openadr contributors"]
 
 [package]
 name = "openadr"
-description = "OpenADR 3.1 in Rust: wire model, domain core, VTN server, VEN runtime and client"
+description = "OpenADR 3.1 in Rust: VTN server, VEN runtime, typed client and an open conformance suite"
 categories = ["web-programming", "network-programming", "embedded"]
 keywords = ["openadr", "energy", "demand-response", "smart-grid", "vtn"]
 readme = "README.md"
 # `cargo package` takes its file list from git and so honours `.gitignore`, but only when the working
-# tree lets it — and a release is the one moment nobody wants that qualifier. `specs/` in particular
-# is the Alliance's publication set, fetched rather than vendored: republishing it under this crate's
-# name is a redistribution this project has chosen not to make.
-exclude = ["specs/", "concepts/", "site/", ".github/", "deploy/"]
+# tree lets it — and a release is the one moment nobody wants that qualifier. `concepts/reference/`
+# in particular holds the Alliance's publication set, fetched rather than vendored: republishing it
+# under this crate's name is a redistribution this project has chosen not to make.
+exclude = ["concepts/", "specs/", ".specify/", ".claude/", "site/", ".github/", "deploy/", "packaging/", "action.yml", "spec.lock", "inputs.lock"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

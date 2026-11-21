@@ -26,6 +26,7 @@ OPTIONS:
     --payload-validation <P>   off | warn | strict        [default: warn]
     --no-cache                 disable ETag/If-None-Match
     --ephemeral                acknowledge in-memory storage on a public address
+    --inspector                serve the read-only inspector page at /_inspect (loopback)
     --webhooks                 deliver notifications to subscriber callbacks
     --webhook-key <SECRET>     sign webhook payloads with this HMAC key
     --webhook-allow-private    accept callback URLs on loopback and private addresses,
@@ -202,6 +203,7 @@ pub fn run_vtn(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let mut caching = true;
     let mut database: Option<String> = None;
     let mut ephemeral = false;
+    let mut inspector = false;
     let mut webhooks = false;
     let mut webhook_key: Option<String> = None;
     let mut storage_key: Option<Vec<u8>> = None;
@@ -253,6 +255,7 @@ pub fn run_vtn(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
             "--database" => database = Some(value()?),
             "--storage-key" => storage_key = Some(parse_storage_key(&value()?)?),
             "--ephemeral" => ephemeral = true,
+            "--inspector" => inspector = true,
             "--webhooks" => webhooks = true,
             "--webhook-key" => {
                 webhook_key = Some(value()?);
@@ -360,7 +363,18 @@ pub fn run_vtn(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         openadr::vtn::notify::CallbackPolicy::default()
     };
 
+    // The page carries no data and grants nothing, but it is a browser surface: on loopback by
+    // default, elsewhere only with the same acknowledgement in-memory storage needs.
+    if inspector && !ephemeral && !is_loopback(&listen) {
+        return Err(format!(
+            "refusing to serve the inspector on {listen}; it is meant for loopback. Pass \
+             --ephemeral to acknowledge a container you publish only to yourself."
+        )
+        .into());
+    }
+
     let mut config = openadr::vtn::VtnConfig {
+        inspector,
         base_path,
         payload_policy: policy,
         http_caching: caching,
@@ -877,7 +891,7 @@ fn parse_duration(spec: &str) -> Result<std::time::Duration, String> {
 }
 
 /// Whether a bind address is reachable only from this host.
-fn is_loopback(listen: &str) -> bool {
+pub(crate) fn is_loopback(listen: &str) -> bool {
     let host = listen.rsplit_once(':').map(|(h, _)| h).unwrap_or(listen);
     let host = host.trim_start_matches('[').trim_end_matches(']');
     if host.eq_ignore_ascii_case("localhost") {

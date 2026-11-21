@@ -1,7 +1,8 @@
 //! Payload specifications generated from the OpenADR enumeration schemas.
 //!
 //! **Generated file — do not edit.** Regenerate with `cargo xtask codegen` after updating
-//! `specs/openadr3-specification/<version>/enumerations/*.schema.yaml`.
+//! `openadr3-specification/<version>/enumerations/*.schema.yaml`, the mirror `cargo xtask
+//! spec-sync` fetches.
 //!
 //! All six enumeration files are read: the four that describe a `valuesMap` become
 //! [`PAYLOAD_SPECS`], and the two that constrain a descriptor field become string tables.

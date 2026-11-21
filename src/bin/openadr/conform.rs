@@ -20,13 +20,17 @@ CONNECTION:
     --bl-token <TOKEN>         a business-logic bearer token
                                [env: OPENADR_TOKEN]
     --bl-client <ID:SECRET>    or business-logic client credentials
+                               [env: OPENADR_CLIENT_ID, OPENADR_CLIENT_SECRET]
     --ven-token <TOKEN>        a VEN bearer token
     --ven-client <ID:SECRET>   or VEN client credentials
+                               [env: OPENADR_VEN_CLIENT_ID, OPENADR_VEN_CLIENT_SECRET]
     --ven-client-id <ID>       the clientID the VEN credential authenticates as
 
 OUTPUT:
     --json                     machine-readable, for a published matrix
     --strict                   exit non-zero if any check failed, not just a required one
+    --report <FILE>            also write a self-contained HTML report to share
+    --badge <FILE>             also write a shields.io endpoint badge (JSON)
 
 WHAT IT NEEDS:
     Business-logic credentials run most of the suite. **Object privacy is the half most worth
@@ -42,7 +46,7 @@ WHAT IT DOES TO THE VTN:
 EXIT STATUS:
     0   no required check failed
     1   a required check failed, or (with --strict) any check did
-    2   the suite could not be run at all
+    2   the suite could not be run at all, or no required check could be attempted
 
 EXAMPLES:
     openadr conformance --url http://localhost:3000/openadr3/3.1.0 \
@@ -63,12 +67,23 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     let mut url = std::env::var("OPENADR_URL").unwrap_or_default();
     let mut bl_token = std::env::var("OPENADR_TOKEN").ok();
-    let mut bl_client: Option<String> = None;
+    // The variables `openadr dev`'s env file sets, so a sourced shell needs no flags at all.
+    let pair = |id: &str, secret: &str| match (std::env::var(id), std::env::var(secret)) {
+        (Ok(id), Ok(secret)) => Some(format!("{id}:{secret}")),
+        _ => None,
+    };
+    let mut bl_client: Option<String> = if bl_token.is_none() {
+        pair("OPENADR_CLIENT_ID", "OPENADR_CLIENT_SECRET")
+    } else {
+        None
+    };
     let mut ven_token: Option<String> = None;
-    let mut ven_client: Option<String> = None;
-    let mut ven_client_id: Option<String> = None;
+    let mut ven_client: Option<String> = pair("OPENADR_VEN_CLIENT_ID", "OPENADR_VEN_CLIENT_SECRET");
+    let mut ven_client_id: Option<String> = std::env::var("OPENADR_VEN_CLIENT_ID").ok();
     let mut json = false;
     let mut strict = false;
+    let mut html_path: Option<String> = None;
+    let mut badge_path: Option<String> = None;
 
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -79,13 +94,24 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         };
         match arg.as_str() {
             "--url" => url = value()?,
-            "--bl-token" => bl_token = Some(value()?),
-            "--bl-client" => bl_client = Some(value()?),
-            "--ven-token" => ven_token = Some(value()?),
+            "--bl-token" => {
+                bl_token = Some(value()?);
+                bl_client = None;
+            }
+            "--bl-client" => {
+                bl_client = Some(value()?);
+                bl_token = None;
+            }
+            "--ven-token" => {
+                ven_token = Some(value()?);
+                ven_client = None;
+            }
             "--ven-client" => ven_client = Some(value()?),
             "--ven-client-id" => ven_client_id = Some(value()?),
             "--json" => json = true,
             "--strict" => strict = true,
+            "--report" => html_path = Some(value()?),
+            "--badge" => badge_path = Some(value()?),
             other => return Err(format!("unknown option {other:?}").into()),
         }
     }
@@ -125,6 +151,29 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
         println!("{}", serde_json::to_string_pretty(&report.to_json())?);
     } else {
         print!("{report}");
+    }
+    let meta = openadr::conformance::RunMeta {
+        generated: openadr::model::Timestamp::now().to_string(),
+        suite_version: env!("CARGO_PKG_VERSION").into(),
+        spec_version: openadr::SPEC_VERSION.into(),
+    };
+    if let Some(path) = &html_path {
+        std::fs::write(path, report.to_html(&meta))
+            .map_err(|e| format!("could not write {path}: {e}"))?;
+        eprintln!("report written to {path}");
+    }
+    if let Some(path) = &badge_path {
+        std::fs::write(path, serde_json::to_string(&report.badge(&meta))?)
+            .map_err(|e| format!("could not write {path}: {e}"))?;
+    }
+
+    // Nothing required was attempted — an unreachable VTN, or no credentials at all. That is not a
+    // pass, so it is not exit 0.
+    let (required_passed, required_failed, _) =
+        report.tally(openadr::conformance::Severity::Required);
+    if required_passed + required_failed == 0 {
+        eprintln!("nothing was measured: no required check could be attempted");
+        std::process::exit(2);
     }
 
     let failed_anything = report.failures().count() > 0;

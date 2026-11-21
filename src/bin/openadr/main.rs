@@ -5,7 +5,12 @@
 //! consumer of the crate's own client library, and a second consumer is what finds the gaps a
 //! library's own tests cannot.
 
+#[cfg(all(feature = "internal-auth", feature = "client"))]
+mod dev;
+mod explain;
 mod serve;
+#[cfg(feature = "client")]
+mod trigger;
 
 #[cfg(feature = "conformance")]
 mod conform;
@@ -51,11 +56,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     // Only the server logs; the client commands write JSON to stdout and anything else to stderr,
     // so that `openadr get events | jq` works without an environment variable.
-    if command == Some("vtn") {
+    if command == Some("vtn") || command == Some("dev") {
+        // `dev` is quieter by default, so the banner is what a first run sees.
+        let default = if command == Some("dev") {
+            "warn"
+        } else {
+            "openadr=info,warn"
+        };
         tracing_subscriber::fmt()
             .with_env_filter(
                 tracing_subscriber::EnvFilter::try_from_default_env()
-                    .unwrap_or_else(|_| "openadr=info,warn".into()),
+                    .unwrap_or_else(|_| default.into()),
             )
             .init();
     }
@@ -71,8 +82,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some(verb @ ("get" | "post" | "put" | "delete" | "watch")) => {
             client_command(verb, &args[1..])
         }
+        Some("dev") => dev_command(&args[1..]),
+        Some("trigger") => trigger_command(&args[1..]),
         Some("conformance") => conformance_command(&args[1..]),
         Some("discover") => discover_command(&args[1..]),
+        Some("explain") => explain::run(&args[1..]),
         Some("hash-secret") => hash_secret(&args[1..]),
         Some("version") | Some("--version") => {
             println!(
@@ -92,6 +106,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(2);
         }
     }
+}
+
+#[cfg(all(feature = "internal-auth", feature = "client"))]
+fn dev_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    dev::run(args)
+}
+
+#[cfg(not(all(feature = "internal-auth", feature = "client")))]
+fn dev_command(_: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    Err(
+        "`openadr dev` needs the `internal-auth` and `client` features; the released binaries \
+         and `brew install hupe1980/tap/openadr` have them"
+            .into(),
+    )
+}
+
+#[cfg(feature = "client")]
+fn trigger_command(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    trigger::run(args)
+}
+
+#[cfg(not(feature = "client"))]
+fn trigger_command(_: &[String]) -> Result<(), Box<dyn std::error::Error>> {
+    Err("`openadr trigger` needs the `client` feature".into())
 }
 
 #[cfg(feature = "client")]
@@ -248,14 +286,17 @@ fn print_help() {
         "openadr {} — OpenADR {} tooling
 
 USAGE:
+    openadr dev                        a VTN with two clients and moving data, in one command
     openadr vtn [OPTIONS]              run a Virtual Top Node
     openadr get <collection> [<id>]    read from a VTN
     openadr post <collection>          create an object
     openadr put <collection> <id>      replace an object
     openadr delete <collection> <id>   remove an object
     openadr watch <collection>         poll, printing only what changed
+    openadr trigger <scenario>         make something happen on a dev VTN: event, cancel, report
     openadr conformance                measure a VTN against the specification
     openadr discover                   find local VTNs on this network over mDNS
+    openadr explain [<name>]           what a problem type or a conformance check means
     openadr hash-secret <SECRET>       hash a client secret for --client-hashed
     openadr version                    print the version
     openadr help                       print this message
@@ -264,15 +305,14 @@ USAGE:
     details.
 
 GETTING STARTED:
-    $ openadr vtn --listen 127.0.0.1:3000 --client bl-1:secret:bl &
-    $ export OPENADR_URL=http://localhost:3000/openadr3/3.1.0
-    $ export OPENADR_TOKEN=$(curl -s -d grant_type=client_credentials -d client_id=bl-1 \\
-          -d client_secret=secret $OPENADR_URL/auth/token | jq -r .access_token)
-    $ openadr post programs --data '{{\"programName\":\"grid-aware-charging\"}}'
-    $ openadr get programs
+    $ openadr dev                      # in one terminal
+    $ source .openadr-dev.env          # in another
+    $ openadr get events
+    $ openadr trigger event
 
 ENVIRONMENT:
     OPENADR_URL, OPENADR_TOKEN, OPENADR_CLIENT_ID, OPENADR_CLIENT_SECRET
+    OPENADR_VEN_CLIENT_ID, OPENADR_VEN_CLIENT_SECRET   the VEN, for `conformance` and `trigger`
     RUST_LOG                           tracing filter for `openadr vtn`
 ",
         env!("CARGO_PKG_VERSION"),

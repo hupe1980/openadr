@@ -49,7 +49,7 @@ enum Cite {
 struct Document {
     /// The citation prefix, e.g. `Def`.
     prefix: &'static str,
-    /// Path under `specs/openadr3-specification`, with `{version}` for the release directory.
+    /// Path under the specification mirror (`openadr3-specification/`), with `{version}` for the release directory.
     path: &'static str,
     style: Cite,
 }

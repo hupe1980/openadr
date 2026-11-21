@@ -20,12 +20,23 @@ target
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
-# OpenADR specification mirror (Apache-2.0, copyright OpenADR Alliance) — downloaded, not vendored
-specs/
-
-# Internal design documents
+# Internal architecture notes (see concepts/README.md), anchored to the repository root. ROADMAP.md
+# carries every open work item.
+#
+# The third-party corpus — the OpenADR 3 specification mirror (Apache-2.0, © OpenADR Alliance) —
+# lives at `concepts/reference/openadr3-specification/` and is covered by this line: fetched by
+# `cargo xtask spec-sync` (or into `$OPENADR_REFERENCE`), not vendored.
 CONCEPT.md
-concepts/
+/concepts/
+
+# This project's own feature specifications, and the Spec Kit machinery that produces them: one
+# `specs/NNN-slug/` per ROADMAP item, `.specify/memory/constitution.md`, the threatspec extension and
+# the `/speckit-*` skills. Same rule as `concepts/` — internal. Until 2026-11-21 `specs/` held the
+# specification mirror now under `concepts/reference/`; a stale copy is ignored by the same line.
+# Matching eebus, sepa and ocpp-kit.
+/specs/
+/.specify/
+/.claude/
 
 # Zola build output
 site/public/
@@ -33,3 +44,7 @@ site/public/
 # `examples/ven` persists which reports it has filed, so a restart does not refile them. That is a
 # run's state, not the repository's.
 ven-state.json
+
+.DS_Store
+# `openadr dev` writes its per-run credentials here; never commit them.
+.openadr-dev.env

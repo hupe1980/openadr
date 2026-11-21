@@ -38,6 +38,7 @@ pub mod auth;
 pub mod dispatch;
 pub mod error;
 pub mod etag;
+pub mod inspector;
 pub mod metrics;
 pub mod notify;
 pub mod openapi;
@@ -103,6 +104,11 @@ pub struct VtnConfig {
     /// Not declared by `openadr3.yaml`; served as an extension, and described as one in
     /// `GET /openapi.json`.
     pub program_name_lookup: bool,
+    /// Whether `/_inspect` — the read-only inspector page — is served.
+    ///
+    /// Off by default. It carries no data and reads the API with credentials the user supplies, so
+    /// it grants nothing; it is off because a page nobody asked for is surface nobody reviewed.
+    pub inspector: bool,
     /// Largest request body accepted, in bytes.
     ///
     /// An event carrying a year of quarter-hourly intervals is large but bounded; an unbounded body
@@ -137,6 +143,7 @@ impl Default for VtnConfig {
             mqtt_publisher_client: None,
             http_caching: true,
             program_name_lookup: true,
+            inspector: false,
             max_body_bytes: 8 * 1024 * 1024,
             request_timeout: std::time::Duration::from_secs(30),
             callback_policy: notify::CallbackPolicy::default(),
@@ -484,6 +491,9 @@ impl Vtn {
             .route("/admin/subscribers", get(api::admin_subscribers))
             .route("/metrics", get(metrics::scrape))
             .merge(api.clone());
+        if self.state.config.inspector {
+            router = router.merge(inspector::routes(&base));
+        }
 
         if !base.is_empty() {
             router = router.nest(&base, api);

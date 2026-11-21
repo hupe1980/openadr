@@ -157,12 +157,49 @@ jobs:
           ./target/debug/openadr conformance \
             --url http://127.0.0.1:3000/openadr3/3.1.0 \
             --bl-token ci-bl --ven-token ci-ven --ven-client-id ven \
-            --json > conformance.json || true
+            --json --report conformance.html --badge conformance-badge.json > conformance.json || true
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: conformance-report
-          path: conformance.json
+          path: |
+            conformance.json
+            conformance.html
+            conformance-badge.json
+
+  # The release's exit condition, measured: from `openadr dev` to a VEN reading a price in force in
+  # under 60 seconds, compilation excluded. The quickstart is a claim until something runs it.
+  first-five-minutes:
+    name: First five minutes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --all-features --bin openadr --example ven
+      - name: openadr dev → a VEN reading a live price
+        run: |
+          set -euo pipefail
+          export PATH="$PWD/target/debug:$PATH"
+          work="$(mktemp -d)" && cd "$work"
+          start=$(date +%s)
+          openadr dev > dev.log 2>&1 &
+          for _ in $(seq 1 100); do [ -f .openadr-dev.env ] && grep -q "Try" dev.log && break; sleep 0.2; done
+          cat dev.log
+          source .openadr-dev.env
+          openadr get events > events.json
+          grep -q day-ahead-price events.json
+          openadr trigger event
+          openadr trigger report
+          openadr conformance --strict > /dev/null
+          "$GITHUB_WORKSPACE/target/debug/examples/ven" > ven.log 2>&1 &
+          for _ in $(seq 1 225); do grep -q "in force from" ven.log && break; sleep 0.2; done
+          cat ven.log
+          grep -q "in force from" ven.log
+          elapsed=$(( $(date +%s) - start ))
+          echo "openadr dev to a VEN reading a price: ${elapsed}s"
+          echo "### First five minutes: ${elapsed}s" >> "$GITHUB_STEP_SUMMARY"
+          [ "$elapsed" -lt 60 ]
 
   spec-drift:
     name: Specification drift

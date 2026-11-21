@@ -22,6 +22,7 @@ $ openadr vtn [OPTIONS]
 | `--payload-validation <P>` | `off`, `warn` (default) or `strict`. |
 | `--no-cache` | Turn off `ETag` / `If-None-Match`. |
 | `--ephemeral` | Acknowledge in-memory storage on a public address. |
+| `--inspector` | Serve the read-only inspector at `/_inspect`. Loopback only, unless `--ephemeral`. |
 | `--webhooks`, `--webhook-key <SECRET>` | Deliver notifications to subscriber callbacks, HMAC-signed. |
 | `--mqtt-broker <URL>` | Publish notifications to a broker. `mqtt://` or `mqtts://`. |
 | `--mqtt-advertise <URL>` | What clients are told to connect to, when the VTN reaches the broker privately. |
@@ -309,6 +310,24 @@ a queue that stops draining is otherwise invisible.
 
 Alert on `openadr_reports_oldest_seconds` exceeding your retention period: that is a sweeper that has
 stopped, and no other number here shows it.
+
+## The inspector
+
+```console
+$ openadr vtn --inspector …          # or: openadr dev, which turns it on
+```
+
+A page at `/_inspect` for the person learning or debugging a VTN: a **timeline** of every event
+against *now*, intervals shaded by value; **who sees what** — each event as business logic sees it
+and whether a VEN can read it, asked of the VTN with that VEN's own credential, so the column is the
+enforcement rather than a model of it; and **deliveries** — outbox depth, dead letters, failing
+subscribers, and a retry button.
+
+It is three static files compiled into the binary. It adds no endpoint and no state: the page signs
+in at `/auth/token` with credentials you give it (the `openadr dev` link carries them in the URL
+fragment, which the browser never sends) and reads the same API any client reads. Its
+Content-Security-Policy forbids inline script, foreign origins and framing, and it inserts what the
+VTN returns as text only. It is not an admin console: the only write is the retry below.
 
 ## The dead-letter view
 

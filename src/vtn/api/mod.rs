@@ -1064,7 +1064,7 @@ mod tests {
     /// The middleware slugs, held to the same published registry as the handler ones.
     #[test]
     fn layer_problems_mint_published_types() {
-        use crate::model::problem::PROBLEM_TYPES;
+        use crate::model::problem::problem_type;
 
         for status in [
             StatusCode::METHOD_NOT_ALLOWED,
@@ -1076,8 +1076,8 @@ mod tests {
         ] {
             let (slug, _) = layer_problem(status);
             assert!(
-                PROBLEM_TYPES.contains(&slug),
-                "{slug} is minted but not published; add it to PROBLEM_TYPES and the registry page"
+                problem_type(slug).is_some(),
+                "{slug} is minted but not published; add it to PROBLEMS and the registry page"
             );
         }
     }

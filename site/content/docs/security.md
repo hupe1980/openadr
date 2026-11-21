@@ -119,8 +119,8 @@ caller *is* stays with the credential, because a VTN with two identity sources i
 answers. The peer's chain reaches your application as a `PeerCertificates` request extension in DER;
 parsing a subject is yours, with an X.509 library of your choosing.
 
-That pair is what Fluvius' NetFlex profile expects: mutual TLS at the edge, a pre-shared token behind
-it, no OAuth2.
+That pair is what a mutual-TLS deployment expects: client certificates at the edge, a pre-shared
+token behind it, no OAuth2.
 
 ```console
 $ openadr vtn \

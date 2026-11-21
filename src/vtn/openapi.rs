@@ -23,7 +23,8 @@ use super::{ApiError, AppState};
 
 /// The Alliance's document, transcoded to JSON by `cargo xtask codegen`.
 ///
-/// © OpenADR Alliance, published under Apache-2.0; see `specs/openadr3-specification/NOTICE`.
+/// © OpenADR Alliance. The OpenAPI document — and only it, of the specification's files — carries an
+/// Apache-2.0 `info.license`, which is what makes serving it a matter of attribution.
 const DOCUMENT: &str = include_str!("openapi.json");
 
 /// Paths that exist only when this VTN has an MQTT broker to point at.

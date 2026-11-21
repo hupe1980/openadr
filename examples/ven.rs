@@ -1,10 +1,15 @@
 //! A VEN: registers, follows a programme, acts on what is in force, and files its reports.
 //!
-//! Start `cargo run --features vtn --example vtn` first, then:
+//! Start a VTN first — `openadr dev` (then `source .openadr-dev.env`), or
+//! `cargo run --features vtn --example vtn` — then:
 //!
 //! ```console
 //! cargo run --features ven --example ven
 //! ```
+//!
+//! It reads `OPENADR_URL`, `OPENADR_VEN_CLIENT_ID`/`OPENADR_VEN_CLIENT_SECRET` and
+//! `OPENADR_VEN_TARGETS` when set, and otherwise talks to `examples/vtn` on its default port with
+//! that example's static token and target.
 //!
 //! The whole loop is [`VenRuntime`]. What is left to write is the two things that are genuinely
 //! this deployment's: what the load does with the values in force, and what the meter reads. Both
@@ -21,7 +26,7 @@
 use std::time::Duration as StdDuration;
 
 use openadr::{
-    client::{Client, VirtualEndNode},
+    client::{Client, Credentials, VirtualEndNode},
     model::{Interval, ReportResource, ResourceName, Value, ValuesMap},
     ven::{DueReport, Meter, VenConfig, VenError, VenRuntime, VenState},
 };
@@ -71,13 +76,30 @@ impl Meter for HouseMeter {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::<VirtualEndNode>::builder(VTN)?
-        .bearer_token("ven-token")
-        .build()?;
+    let url = std::env::var("OPENADR_URL").unwrap_or_else(|_| VTN.to_string());
+    let builder = Client::<VirtualEndNode>::builder(&url)?;
+    let client = match (
+        std::env::var("OPENADR_VEN_CLIENT_ID"),
+        std::env::var("OPENADR_VEN_CLIENT_SECRET"),
+    ) {
+        (Ok(id), Ok(secret)) => builder.credentials(Credentials::new(id, secret)),
+        _ => builder.bearer_token("ven-token"),
+    }
+    .build()?;
 
     let config = VenConfig::new("water-heater-7".parse()?)
         .with_resources(["water-heater".parse()?])
-        .with_targets(["group1".parse()?])
+        // The example VTN aims its events at `group1`; anywhere else, name the targets this VEN
+        // was granted in OPENADR_VEN_TARGETS (comma-separated), or none.
+        .with_targets(match std::env::var("OPENADR_VEN_TARGETS") {
+            Ok(list) => list
+                .split(',')
+                .filter(|t| !t.is_empty())
+                .map(str::parse)
+                .collect::<Result<Vec<_>, _>>()?,
+            Err(_) if std::env::var("OPENADR_URL").is_ok() => Vec::new(),
+            Err(_) => vec!["group1".parse()?],
+        })
         .with_poll_interval(StdDuration::from_secs(60))
         // Every unit in a fleet needs a different seed, or `randomizeStart` spreads nothing.
         .with_randomization_seed(0xd15_9a7c4);
@@ -128,13 +150,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         match ven.active_at(ven.now()) {
             Some(segment) => println!(
-                "in force from {} until {}: {:?}",
+                "in force from {} until {}: {}",
                 segment.start,
                 segment
                     .end
                     .map(|e| e.to_string())
                     .unwrap_or_else(|| "∞".into()),
-                segment.payloads
+                segment
+                    .payloads
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("; ")
             ),
             None => println!("nothing in force"),
         }

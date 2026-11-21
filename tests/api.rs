@@ -1779,8 +1779,8 @@ async fn reads_are_marked_private_and_revalidated() {
 ///
 /// The document is a claim about the API, and a claim nothing checks is the shape half the defects
 /// in this repository have had. `cargo xtask check-paths` guards the other direction — the
-/// Alliance's document against the router — and needs `specs/`; this one needs nothing and runs in
-/// every build, because the document a *client* fetches is the one served here.
+/// Alliance's document against the router — and needs the fetched mirror; this one needs nothing
+/// and runs in every build, because the document a *client* fetches is the one served here.
 #[tokio::test]
 async fn the_openapi_document_describes_only_endpoints_that_exist() {
     let h = Harness::new();
@@ -2820,4 +2820,47 @@ async fn without_a_configured_publisher_nothing_may_publish() {
     )
     .await;
     assert_eq!(refused["result"], "deny", "{refused}");
+}
+
+/// `/_inspect` exists only when asked for, and every file of it forbids inline script, foreign
+/// origins and framing (inspector/SR-001).
+#[tokio::test]
+async fn the_inspector_is_served_only_when_enabled_and_always_locked_down() {
+    for enabled in [false, true] {
+        let router = Vtn::builder()
+            .storage(MemoryStorage::shared())
+            .authenticator(Arc::new(StaticTokenAuth::new("http://vtn.test/auth/token")))
+            .config(VtnConfig {
+                inspector: enabled,
+                ..Default::default()
+            })
+            .build()
+            .router();
+        for path in ["/_inspect", "/_inspect/app.js", "/_inspect/style.css"] {
+            let response = router
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            if !enabled {
+                assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+                continue;
+            }
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let csp = response.headers()[header::CONTENT_SECURITY_POLICY]
+                .to_str()
+                .unwrap();
+            for directive in [
+                "default-src 'none'",
+                "script-src 'self'",
+                "frame-ancestors 'none'",
+            ] {
+                assert!(csp.contains(directive), "{path}: {csp}");
+            }
+            assert_eq!(
+                response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+                "nosniff"
+            );
+        }
+    }
 }
