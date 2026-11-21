@@ -1,6 +1,6 @@
 # Run the open OpenADR 3.1 conformance suite against a VTN, in your own CI.
 #
-#   - uses: hupe1980/openadr@v0.5.0
+#   - uses: hupe1980/openadr@v0.5.1
 #     with:
 #       url: http://localhost:3000/openadr3/3.1.0
 #       bl-client: bl-1:${{ secrets.BL_SECRET }}
@@ -77,11 +77,12 @@ runs:
         fi
         dir="$RUNNER_TEMP/openadr"
         mkdir -p "$dir"
-        archive="openadr-$tag-$target.tar.gz"
+        name="openadr-$tag-$target"
+        archive="$name.tar.gz"
         gh release download "$tag" --repo hupe1980/openadr --dir "$dir" \
-          --pattern "$archive" --pattern "$archive.sha256"
+          --pattern "$archive" --pattern "$name.sha256"
         # The archive is checked against the release's own checksum before anything is extracted.
-        (cd "$dir" && if command -v sha256sum >/dev/null; then sha256sum -c "$archive.sha256"; else shasum -a 256 -c "$archive.sha256"; fi)
+        (cd "$dir" && if command -v sha256sum >/dev/null; then sha256sum -c "$name.sha256"; else shasum -a 256 -c "$name.sha256"; fi)
         tar -xzf "$dir/$archive" -C "$dir"
         echo "$dir" >> "$GITHUB_PATH"
         "$dir/openadr" version

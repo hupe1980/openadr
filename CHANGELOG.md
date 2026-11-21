@@ -7,6 +7,14 @@ that a minor release may break.
 Entries cite `D-nnn`: the project's architecture decision records, which carry the reasoning and the
 alternative each change rejected. Unfinished work is tracked separately and does not appear here.
 
+## [0.5.1] — 2026-11-21
+
+### Fixed
+
+- **The GitHub Action** looked for `<archive>.tar.gz.sha256`; releases publish `<archive>.sha256`.
+  `uses: hupe1980/openadr@v0.5.1` installs, verifies and runs. (`@v0.5.0` does not.)
+- **The Homebrew formula** was not published for 0.5.0, for the same reason; 0.5.1 publishes it.
+
 ## [0.5.0] — 2026-11-21
 
 The first five minutes. **Breaking**, deliberately — pre-1.0 changes are made in place.
@@ -28,7 +36,7 @@ The first five minutes. **Breaking**, deliberately — pre-1.0 changes are made 
 - **A conformance report to share.** `--report report.html` (one page, failures first with their
   clause; no script; light, dark and print) and `--badge badge.json` (shields.io endpoint);
   `Report::to_html` and `Report::badge`.
-- **A GitHub Action**: `uses: hupe1980/openadr@v0.5.0` runs the suite against your VTN in CI with
+- **A GitHub Action**: `uses: hupe1980/openadr@<tag>` runs the suite against your VTN in CI with
   a checksum-verified binary, a job summary and the report as an artifact.
 - **Write-side privacy checks**: a VEN can neither replace nor delete another client's VEN object,
   resource or subscription (required), and the refusal is a `404` (recommended). 52 checks; 51 proven

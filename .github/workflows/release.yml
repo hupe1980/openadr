@@ -327,7 +327,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "$GITHUB_REF_NAME" --pattern '*.tar.gz.sha256' --dir sums
+          # `upload-rust-binary-action` names each one `<archive name>.sha256`, without `.tar.gz`.
+          gh release download "$GITHUB_REF_NAME" --pattern 'openadr-*.sha256' --dir sums
           cat sums/*.sha256 > checksums.txt
           cat checksums.txt
       - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
