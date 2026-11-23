@@ -69,9 +69,8 @@ impl Keycloak {
             .inspect_err(|e| eprintln!("skipping: no Docker for a Keycloak container ({e})"))
             .ok()?;
 
-        // This crate builds `reqwest` without a crypto provider of its own and installs `ring`
-        // before every client it constructs. A client built *here* is not one of those.
-        openadr::install_crypto_provider();
+        // This fixture builds its own reqwest client, before any OpenADR transport exists.
+        openadr::install_crypto_provider().unwrap();
 
         let port = container.get_host_port_ipv4(8080.tcp()).await.ok()?;
         Some(Self {

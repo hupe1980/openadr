@@ -402,7 +402,7 @@ pub enum AggregateError {
 /// **Aggregation means the data from a set of resources are summed.**"
 ///
 /// The arithmetic is written down, so it is not a decision left to the deployment. A
-/// [`Meter`](crate::ven::Meter) owes the readings; the protocol owes the shape, and the shape
+/// `ven::Meter` owes the readings; the protocol owes the shape, and the shape
 /// includes the reserved name — without it a VTN cannot tell an aggregate from a resource that
 /// happens to be alone.
 ///

@@ -1,9 +1,9 @@
 [workspace]
-members = ["xtask"]
+members = ["xtask", "tests/aws-lc-consumer"]
 resolver = "3"
 
 [workspace.package]
-version = "0.5.1"
+version = "0.6.0"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0 OR MIT"
@@ -17,11 +17,8 @@ description = "OpenADR 3.1 in Rust: VTN server, VEN runtime, typed client and an
 categories = ["web-programming", "network-programming", "embedded"]
 keywords = ["openadr", "energy", "demand-response", "smart-grid", "vtn"]
 readme = "README.md"
-# `cargo package` takes its file list from git and so honours `.gitignore`, but only when the working
-# tree lets it — and a release is the one moment nobody wants that qualifier. `concepts/reference/`
-# in particular holds the Alliance's publication set, fetched rather than vendored: republishing it
-# under this crate's name is a redistribution this project has chosen not to make.
-exclude = ["concepts/", "specs/", ".specify/", ".claude/", "site/", ".github/", "deploy/", "packaging/", "action.yml", "spec.lock", "inputs.lock"]
+# Keep the Alliance reference documents and local development tools out of the crate.
+exclude = ["concepts/", "specs/", ".specify/", ".agents/", ".claude/", "site/", ".github/", "deploy/", "packaging/", "action.yml", "spec.lock", "inputs.lock"]
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -31,7 +28,9 @@ homepage.workspace = true
 authors.workspace = true
 
 [features]
-default = ["std"]
+default = ["std", "tls-ring"]
+# Supply a fallback only for roles that already depend on rustls.
+tls-ring = ["rustls?/ring"]
 
 # --- foundation -------------------------------------------------------------
 # The crate is always `no_std` + `alloc`: the wire model is Strings and Vecs, so an allocator is not
@@ -89,6 +88,8 @@ webhook = ["vtn", "webhook-signature", "dep:reqwest", "dep:rustls", "dep:rand", 
 mqtt = [
     "std",
     "dep:tokio",
+    "tokio/net",
+    "tokio/io-util",
     "dep:tokio-rustls",
     "dep:rustls",
     "dep:webpki-roots",
@@ -124,15 +125,9 @@ uuid = { version = "1.26.1", optional = true, features = ["v7", "std"] }
 http = { version = "1.4.0", optional = true }
 url = { version = "2.5.8", optional = true, features = ["serde"] }
 futures-util = { version = "0.3.32", optional = true, default-features = false, features = ["std"] }
-# `…-no-provider` rather than `rustls-tls`: the plain feature drags in `aws-lc-rs` as the crypto
-# provider, and this crate already installs `ring` (see `src/crypto.rs`). Two providers in one binary
-# is a large C and assembly dependency that nothing calls, a cross-compilation that needs a C
-# toolchain it should not, and the ambiguity that made `install_default` necessary in the first
-# place. The roots are the same either way.
+# The application or the tls-ring fallback installs the process provider.
 reqwest = { version = "0.13.5", optional = true, default-features = false, features = ["http2", "charset", "rustls-no-provider", "json", "form"] }
-# Held at 9.x. From 10.0 the crypto backend is a required choice between `aws_lc_rs`, which `[bans]`
-# refuses, and `rust_crypto`, a third implementation carrying RUSTSEC-2023-0071 against `rsa`. 9.x
-# links the `ring` that is in the tree regardless.
+# JWT signing and SQL storage encryption use ring independently of the TLS provider.
 jsonwebtoken = { version = "9.3.1", optional = true, default-features = false }
 argon2 = { version = "0.6.0", optional = true }
 rand = { version = "0.9.2", optional = true }
@@ -146,14 +141,14 @@ mdns-sd = { version = "0.21.3", optional = true, default-features = false }
 # AES-256-GCM for encrypting stored subscriber credentials; only the SQL backends need it. Already
 # linked by `rustls` and `jsonwebtoken`, so naming it directly adds no code to the binary.
 ring = { version = "0.17.14", optional = true }
-rustls = { version = "0.23.44", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23.44", optional = true, default-features = false, features = ["std", "tls12"] }
 # Root certificates for the MQTT client's TLS. `reqwest` already carries this set for HTTPS; naming
 # it here is what lets `--features mqtt` build without `client`.
 webpki-roots = { version = "1.0.9", optional = true }
 # The VTN's own TLS listener, and the MQTT client's transport. `axum::serve` cannot carry a peer
 # certificate into the request it precedes, so the accept loop is written out and these are what it
 # needs.
-tokio-rustls = { version = "0.26.5", optional = true, default-features = false, features = ["ring", "tls12", "logging"] }
+tokio-rustls = { version = "0.26.5", optional = true, default-features = false, features = ["tls12", "logging"] }
 hyper = { version = "1.11.1", optional = true, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1.20", optional = true, features = ["server-auto", "tokio"] }
 

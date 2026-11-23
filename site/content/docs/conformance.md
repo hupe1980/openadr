@@ -196,7 +196,7 @@ reported as *not measured* and exits `2`. A connection that fails is a skip, nev
 
 {% raw %}
 ```yaml
-- uses: hupe1980/openadr@v0.5.1
+- uses: hupe1980/openadr@v0.6.0
   with:
     url: http://localhost:3000/openadr3/3.1.0
     bl-client: bl-1:${{ secrets.BL_SECRET }}
@@ -232,13 +232,22 @@ println!("{}", report.to_json());
 
 ## Against another implementation
 
-`cargo test --all-features --test interop -- --ignored --nocapture` starts another OpenADR 3 VTN and
-a database in containers and points the suite at it; CI runs it weekly against that project's
-current release and publishes the JSON. It never fails on the peer's findings — those are the output
-— only when nothing was measured.
+Open the [Interop workflow](https://github.com/hupe1980/openadr/actions/workflows/interop.yml)
+and select a successful run. The summary lists results by severity. Its UTC-dated artifact contains
+`interop.html` for reading and `interop.json` for comparison. Both identify the peer image by digest.
+A peer failing a protocol check is a measured result. A container startup failure, a failed database
+bootstrap, or insufficient measurements fails the job before publication.
+
+To reproduce a weekly reading, use its image digest and run the following with Docker available:
+
+```console
+$ OPENADR_PEER_IMAGE='ghcr.io/openleadr/openleadr-rs@sha256:<digest>' OPENADR_INTEROP_JSON=interop.json cargo test --locked --all-features --test interop -- --ignored --nocapture
+```
+
+Omit `OPENADR_PEER_IMAGE` to use the default peer tag. Omit `OPENADR_INTEROP_JSON` to print the findings in the terminal.
 
 The disagreements it has surfaced are the kind worth a pull request on either side: a
-`GET /notifiers` with no `WEBHOOK` key, `P9999Y` normalised into an ordinary 9999-year span, an
+`GET /notifiers` with no `WEBHOOK` key, the `P9999Y` infinity sentinel returned with a different wire spelling, an
 `intervalPeriod` without `start` refused, a token endpoint without `Cache-Control: no-store`. It has
 found defects here too — a sentinel recognised by spelling rather than by value, and a check that
 filed this project's choice as the specification's requirement. Both are fixed; the second is why

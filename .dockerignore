@@ -4,3 +4,10 @@ target
 .git
 site/public
 specs
+
+# Local planning and development files are outside the container build.
+concepts
+.specify
+.agents
+.claude
+.openadr-dev.env

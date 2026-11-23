@@ -1,6 +1,6 @@
 # Run the open OpenADR 3.1 conformance suite against a VTN, in your own CI.
 #
-#   - uses: hupe1980/openadr@v0.5.1
+#   - uses: hupe1980/openadr@v0.6.0
 #     with:
 #       url: http://localhost:3000/openadr3/3.1.0
 #       bl-client: bl-1:${{ secrets.BL_SECRET }}
@@ -43,7 +43,7 @@ inputs:
     required: false
     default: "false"
   version:
-    description: The openadr release to run (a tag such as v0.5.0, or "latest")
+    description: The openadr release to run (a tag such as v0.6.0, or "latest")
     required: false
     default: latest
 

@@ -82,7 +82,7 @@ impl Timeline {
     /// first read the event — not whenever a timeline happens to be rebuilt. One expander for the
     /// whole set re-resolves the sentinel on every rebuild, so a "do it now" curtailment slides
     /// forward each time and never ends. A caller that holds events over time
-    /// ([`VenRuntime`](crate::ven::VenRuntime)) therefore anchors each event when it arrives and
+    /// (`ven::VenRuntime`) therefore anchors each event when it arrives and
     /// passes that instant back in here.
     pub fn build_with<'a>(
         events: impl IntoIterator<Item = (&'a ObjectId, &'a EventRequest, IntervalExpander)>,

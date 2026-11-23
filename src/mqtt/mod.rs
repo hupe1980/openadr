@@ -35,9 +35,15 @@ use crate::std_shim::{String, ToString, format};
 /// Why a broker operation did not happen.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum MqttError {
+    /// TLS requires the embedding application to install a provider.
+    #[error(transparent)]
+    MissingCryptoProvider(#[from] crate::MissingCryptoProvider),
     /// The broker URL could not be understood.
     #[error("invalid broker URL: {0}")]
     Url(String),
+    /// The installed TLS provider cannot support the requested protocol versions.
+    #[error("invalid MQTT TLS configuration: {0}")]
+    TlsConfig(String),
     /// The broker refused the connection, with its return code.
     #[error("the broker refused the connection: {1} (code {0})")]
     Refused(u8, &'static str),
@@ -55,12 +61,15 @@ pub enum MqttError {
 impl MqttError {
     /// Whether another attempt could plausibly succeed.
     ///
-    /// Everything except a URL that does not parse. A broker that is down comes back, a dropped
+    /// Local URL and TLS configuration errors require operator action. A broker that is down comes back, a dropped
     /// connection is what the dispatcher's backoff is for, and even a refusal is retriable: the
     /// commonest cause is an access token that expired, which is true now and false after the
     /// operator renews it (D-102).
     pub fn is_retriable(&self) -> bool {
-        !matches!(self, MqttError::Url(_))
+        !matches!(
+            self,
+            MqttError::Url(_) | MqttError::MissingCryptoProvider(_) | MqttError::TlsConfig(_)
+        )
     }
 }
 
@@ -139,11 +148,13 @@ impl BrokerAddress {
             return Ok(Box::new(tcp));
         }
 
-        crate::crypto::install_crypto_provider();
+        let provider = crate::crypto::install_crypto_provider()?;
         let roots = rustls::RootCertStore {
             roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
         };
-        let config = rustls::ClientConfig::builder()
+        let config = rustls::ClientConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .map_err(|e| MqttError::TlsConfig(e.to_string()))?
             .with_root_certificates(roots)
             .with_no_client_auth();
         let server_name =

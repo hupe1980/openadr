@@ -43,6 +43,9 @@ use rustls::pki_types::{CertificateDer, PrivateKeyDer, pem::PemObject};
 /// Why a TLS listener could not be built or started.
 #[derive(Debug, thiserror::Error)]
 pub enum TlsError {
+    /// TLS requires the embedding application to install a provider.
+    #[error(transparent)]
+    MissingCryptoProvider(#[from] crate::MissingCryptoProvider),
     /// A PEM file could not be read.
     #[error("could not read {path}: {source}")]
     Io {
@@ -185,9 +188,11 @@ impl TlsConfig {
     /// TLS 1.2 and 1.3 only, which is what the compiled provider offers; there is no switch for
     /// anything older because there is nothing older to switch on.
     pub fn server_config(&self) -> Result<rustls::ServerConfig, TlsError> {
-        crate::crypto::install_crypto_provider();
+        let provider = crate::crypto::install_crypto_provider()?;
 
-        let builder = rustls::ServerConfig::builder();
+        let builder = rustls::ServerConfig::builder_with_provider(provider.clone())
+            .with_safe_default_protocol_versions()
+            .map_err(|e| TlsError::Config(e.to_string()))?;
         let builder = if self.client_ca.is_empty() {
             builder.with_no_client_auth()
         } else {

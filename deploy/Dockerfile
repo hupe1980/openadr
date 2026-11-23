@@ -5,7 +5,7 @@
 FROM rust:1-slim AS build
 WORKDIR /src
 COPY . .
-RUN cargo build --release --features vtn,client,sqlite,webhook,mqtt,internal-auth,mdns,tls \
+RUN cargo build --locked --release --features vtn,client,sqlite,webhook,mqtt,internal-auth,mdns,tls \
  && strip target/release/openadr
 
 FROM gcr.io/distroless/cc-debian12

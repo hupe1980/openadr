@@ -4,9 +4,6 @@ description = "What is built and tested in openadr, what it does not do, and whe
 weight = 110
 +++
 
-Pre-1.0, and honest about it. This page says what works and what does not, so a limitation is not
-mistaken for a bug.
-
 ## Built and tested
 
 | | Cargo feature | |
@@ -33,30 +30,9 @@ mistaken for a bug.
 | Conformance kit — black-box, 52 clause-citing checks against any VTN, 51 proven able to fail; HTML report, badge, GitHub Action | `conformance` | Complete; weekly against another implementation |
 | External auth — end-to-end against a real Keycloak: realm, client-credentials grant, token, write | `external-auth` | Complete |
 
-Tests sit at the seams: the real HTTP router, the VEN runtime and the client against a real VTN,
-webhooks over real sockets, JWTs against a real JWKS, a real broker, real TLS handshakes, a real
-Keycloak, a real multicast group, and a storage conformance suite every backend runs — PostgreSQL
-included, which starts its own container rather than skipping.
-
-Three more are `#[ignore]`d, because they measure rather than assert: `load` (write latency, broker
-fan-out, drain rate, report ingest with and without a broker behind it), `interop` (this suite
-against another VTN) and `broker` (object privacy across a real EMQX, from `deploy/compose.yaml`).
-
-`cargo test` with nothing configured starts its own PostgreSQL and Keycloak containers; both skip,
-loudly, on a machine with no Docker.
-
-CI holds: the quickstart, timed — `openadr dev` to a VEN reading a price in under 60 seconds;
-`cargo fmt --check`; clippy with `-D warnings`; rustdoc with `-D warnings`;
-`thumbv7em-none-eabihf` and `wasm32-unknown-unknown` builds (and the webhook signature verifier on
-bare metal); every feature combination via `cargo hack`; the payload-table drift check *and* the
-wire-model check *and* the OpenAPI copy against `openadr3.yaml`; `cargo deny` over advisories,
-licences, banned crates and registries, with a CycloneDX SBOM published per build. The PostgreSQL
-suite runs against a real server in CI, which is what stops "skips locally" from becoming "is never
-run".
-
-Three further guards check claims this project makes about *itself*: that every `problem.type` URI it
-mints resolves, that the storage suite calls every method of the storage trait and runs every
-behaviour written for it, and the traceability below.
+CI exercises the HTTP API, VEN runtime, TLS providers, storage backends, MQTT broker and Keycloak.
+Run the load and external interoperability measurements with the instructions in
+[CONTRIBUTING.md](https://github.com/hupe1980/openadr/blob/main/CONTRIBUTING.md).
 
 ## Traceability
 
@@ -97,8 +73,7 @@ client speaks 3.1.1, which is the version that is required.
 ## Known limitations
 
 **Interoperability is measured against one peer.** [The conformance suite](@/docs/conformance.md)
-runs weekly against one other implementation's current release; more peers are the next step, and
-the checks are still written from this project's reading of the specification.
+runs weekly against one peer’s latest image, resolved by digest for the run. Each report records the image digest and measurement time.
 
 **Nothing is certified.** Certification uses a closed online test tool. Several behaviours it checks
 are unspecified in the public documents, so this implementation makes documented guesses — list
@@ -147,33 +122,3 @@ most likely to matter to an integrator:
 - `?targets=` is a privacy gate on programmes and events, and only a filter elsewhere.
 
 All of them, with the reasoning, are in [Reading the specification](@/docs/spec-notes.md).
-
-## Choosing this one
-
-Other OpenADR 3 implementations exist, some of them production-proven at scale and certified, and
-one of those is the right answer if what you need is something already deployed. This page is about
-what is here, not about them.
-
-What is unusual about this implementation, and worth weighing:
-
-- **Webhook and MQTT delivery, with object privacy on both.** Per-VEN topic copies with target
-  hiding, and the broker authorization callback the specification requires and leaves to the
-  implementer.
-- **A transactional outbox.** A notification is written in the same transaction as the object that
-  caused it, so there is no window in which an event exists and nobody has been told.
-- **A VEN runtime**, not only a client: registration, conditional sync, timelines, report
-  scheduling, a clock-skew guard.
-- **A black-box conformance kit** that runs against *any* VTN, including yours.
-- **Decimals, generated payload typing, and `no_std`** for the model, schema and core.
-- **No C library to install**, for any feature: no OpenSSL, no Avahi, nothing `pkg-config` has to
-  find. What C there is — `ring`, and SQLite under the `sqlite` feature — is vendored source cargo
-  builds, which is what makes cross-compilation ordinary.
-
-And what is not here: certification, and the deployment history that comes with it.
-[What it does not do](#what-it-does-not-do) above is the rest of the answer.
-
-## Contributing
-
-The repository is at [github.com/hupe1980/openadr](https://github.com/hupe1980/openadr), and
-`CONTRIBUTING.md` says what a change should come with. The most valuable thing anyone can send is a
-correctness report about object privacy or the notification outbox, because both fail silently.

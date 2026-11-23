@@ -37,6 +37,7 @@ CONCEPT.md
 /specs/
 /.specify/
 /.claude/
+/.agents/skills/speckit-*/
 
 # Zola build output
 site/public/

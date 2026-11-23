@@ -19,12 +19,12 @@
 
 #![cfg(all(feature = "conformance", feature = "internal-auth", feature = "client"))]
 
-use std::time::Duration;
+use std::{path::PathBuf, time::Duration};
 
-use openadr::conformance::{Credential, Outcome, Runner, Severity, Target};
+use openadr::conformance::{Credential, Outcome, RunMeta, Runner, Severity, Target};
 use testcontainers::{
     ContainerAsync, GenericImage, ImageExt,
-    core::{ExecCommand, IntoContainerPort},
+    core::{CmdWaitFor, ExecCommand, IntoContainerPort},
     runners::AsyncRunner,
 };
 use testcontainers_modules::postgres::Postgres;
@@ -36,8 +36,6 @@ const PEER_IMAGE_VAR: &str = "OPENADR_PEER_IMAGE";
 const JSON_VAR: &str = "OPENADR_INTEROP_JSON";
 
 const POSTGRES_TAG: &str = "17-alpine";
-const NETWORK: &str = "oadr-interop";
-const PG_HOST: &str = "oadr-interop-pg";
 const DB: &str = "openadr";
 const SECRET: &str = "interop-secret";
 const BL: &str = "interop-bl";
@@ -77,9 +75,9 @@ impl Peer {
             r#"
 INSERT INTO "user" (id, reference, description, created, modified, scopes) VALUES
  ('{BL}','{BL}','conformance', now(), now(),
-  ARRAY['read_all','write_programs','write_events','write_subscriptions_bl','write_vens_bl','write_reports']::scope[]),
+  ARRAY['read_all','write_programs','write_events','write_subscriptions_bl','write_vens_bl','write_reports_bl']::scope[]),
  ('{VEN}','{VEN}','conformance', now(), now(),
-  ARRAY['read_targets','read_ven_objects','write_reports','write_subscriptions_ven','write_vens_ven']::scope[])
+  ARRAY['read_targets','read_ven_objects','write_reports_ven','write_subscriptions_ven','write_vens_ven']::scope[])
 ON CONFLICT (id) DO NOTHING;
 INSERT INTO user_credentials (user_id, client_id, client_secret) VALUES
  ('{BL}','{BL}','{hash}'), ('{VEN}','{VEN}','{hash}')
@@ -105,7 +103,7 @@ fn free_port() -> u16 {
 /// Wait until the peer answers `GET /auth/server`, which is the endpoint every VTN serves without
 /// credentials — so it is the one thing that can be polled before anything has been provisioned.
 async fn wait_until_serving(base: &str) -> bool {
-    openadr::install_crypto_provider();
+    openadr::install_crypto_provider().unwrap();
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
@@ -125,16 +123,15 @@ async fn wait_until_serving(base: &str) -> bool {
 }
 
 /// Start Postgres and the peer on one network, and hand back the peer's base URL.
-///
-/// `None` when there is no Docker. A machine without one is a legitimate place to build this crate;
-/// a run that pretended to have measured something is not.
 async fn start(
     peer: &Peer,
-) -> Option<(
+) -> (
     ContainerAsync<Postgres>,
     ContainerAsync<GenericImage>,
     String,
-)> {
+) {
+    let network = format!("oadr-interop-{}", uuid::Uuid::now_v7());
+    let pg_host = format!("{network}-pg");
     let postgres = Postgres::default()
         .with_user(DB)
         .with_password(DB)
@@ -143,24 +140,23 @@ async fn start(
         // `jsonb_path_exists`, which arrived in 12. Left alone it starts, accepts the connection,
         // and panics on the first read.
         .with_tag(POSTGRES_TAG)
-        .with_network(NETWORK)
-        .with_container_name(PG_HOST)
+        .with_network(&network)
+        .with_container_name(&pg_host)
         .start()
         .await
-        .inspect_err(|e| eprintln!("skipping interop: no Docker ({e})"))
-        .ok()?;
+        .expect("interop measurement requires a running PostgreSQL container");
 
     // The peer reaches Postgres by container name on the shared network, not through a mapped port.
     let port = free_port();
     let vtn = GenericImage::new(&peer.image, &peer.tag)
         .with_mapped_port(port, 3000.tcp())
-        .with_network(NETWORK)
+        .with_network(&network)
         // The peer publishes no arm64 variant; naming the platform makes the emulation deliberate
         // rather than a pull that fails differently on different machines.
         .with_platform("linux/amd64")
         .with_env_var(
             "DATABASE_URL",
-            format!("postgres://{DB}:{DB}@{PG_HOST}:5432/{DB}"),
+            format!("postgres://{DB}:{DB}@{pg_host}:5432/{DB}"),
         )
         // What the peer advertises from `GET /auth/server`. It must be the address a client on
         // *this* side of the port mapping can reach, not the one inside the container.
@@ -171,53 +167,41 @@ async fn start(
         .with_startup_timeout(Duration::from_secs(300))
         .start()
         .await
-        .inspect_err(|e| eprintln!("skipping interop: the peer image would not start ({e})"))
-        .ok()?;
+        .expect("interop measurement requires the peer VTN container to start");
 
     let base = format!("http://127.0.0.1:{port}");
-    if !wait_until_serving(&base).await {
-        // Its own logs, not "it never answered". A skip nobody can diagnose is a skip that becomes
-        // permanent.
-        eprintln!("the peer never answered GET /auth/server at {base}. Its output:");
-        for (stream, bytes) in [
-            ("stdout", vtn.stdout_to_vec().await),
-            ("stderr", vtn.stderr_to_vec().await),
-        ] {
-            let text = String::from_utf8_lossy(&bytes.unwrap_or_default()).to_string();
-            for line in text.lines().rev().take(20).collect::<Vec<_>>().iter().rev() {
-                eprintln!("  {stream}: {line}");
-            }
-        }
-        return None;
-    }
-    Some((postgres, vtn, base))
+    assert!(
+        wait_until_serving(&base).await,
+        "peer never became ready at {base}/auth/server"
+    );
+    (postgres, vtn, base)
 }
 
 #[tokio::test]
 #[ignore = "a measurement against somebody else's VTN: run with --ignored --nocapture"]
 async fn the_suite_runs_against_a_peer() {
     let peer = Peer::from_env();
-    let Some((postgres, _vtn, base)) = start(&peer).await else {
-        return;
-    };
+    let (postgres, _vtn, base) = start(&peer).await;
 
     // The peer's first client, written where it can be read. See the note at the top of this file.
     let hash = openadr::vtn::auth::InternalAuth::hash_secret(SECRET).expect("a PHC string");
-    let result = postgres
-        .exec(ExecCommand::new([
-            "psql",
-            "-qtU",
-            DB,
-            "-d",
-            DB,
-            "-c",
-            &Peer::bootstrap(&hash),
-        ]))
-        .await;
-    assert!(
-        result.is_ok(),
-        "the peer's bootstrap failed — its schema has probably changed: {result:?}"
-    );
+    postgres
+        .exec(
+            ExecCommand::new([
+                "psql",
+                "-v",
+                "ON_ERROR_STOP=1",
+                "-qtU",
+                DB,
+                "-d",
+                DB,
+                "-c",
+                &Peer::bootstrap(&hash),
+            ])
+            .with_cmd_ready_condition(CmdWaitFor::exit_code(0)),
+        )
+        .await
+        .expect("peer database bootstrap must succeed before measuring");
 
     let credential = |id: &str| Credential::ClientCredentials {
         id: id.to_string(),
@@ -227,18 +211,10 @@ async fn the_suite_runs_against_a_peer() {
         .with_business_logic(credential(BL))
         .with_ven(credential(VEN), VEN);
 
-    let report = Runner::new(target)
+    let mut report = Runner::new(target)
         .expect("the base URL parses")
         .run()
         .await;
-    println!("\n{report}");
-
-    if let Ok(path) = std::env::var(JSON_VAR) {
-        std::fs::write(&path, serde_json::to_vec_pretty(&report.to_json()).unwrap())
-            .unwrap_or_else(|e| panic!("could not write {path}: {e}"));
-        println!("wrote {path}");
-    }
-
     // What is asserted, and what is not.
     //
     // Not asserted: that the peer conforms. Its divergences are findings about it, and a test that
@@ -271,4 +247,28 @@ async fn the_suite_runs_against_a_peer() {
         "only {} required checks were attempted — the suite did not run",
         passed + failed
     );
+    report.target = format!("{}:{}", peer.image, peer.tag);
+    if let Some(path) = std::env::var_os(JSON_VAR).map(PathBuf::from) {
+        assert_eq!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("json"),
+            "{JSON_VAR} must name a .json file"
+        );
+        let meta = RunMeta {
+            generated: openadr::model::Timestamp::now().to_string(),
+            suite_version: env!("CARGO_PKG_VERSION").into(),
+            spec_version: openadr::SPEC_VERSION.into(),
+        };
+        let mut json = report.to_json();
+        json["generated"] = meta.generated.clone().into();
+        json["suiteVersion"] = meta.suite_version.clone().into();
+        json["specVersion"] = meta.spec_version.clone().into();
+        let html = path.with_extension("html");
+        std::fs::write(&html, report.to_html(&meta)).expect("write HTML interop report");
+        std::fs::write(&path, serde_json::to_vec_pretty(&json).unwrap())
+            .expect("write JSON interop report");
+        println!("reports: {} and {}", path.display(), html.display());
+    } else {
+        println!("{report}");
+    }
 }

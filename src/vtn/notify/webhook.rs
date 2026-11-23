@@ -60,6 +60,9 @@ impl Default for WebhookConfig {
 /// Why a delivery did not happen.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum WebhookError {
+    /// TLS requires the embedding application to install a provider.
+    #[error(transparent)]
+    MissingCryptoProvider(#[from] crate::MissingCryptoProvider),
     /// The callback URL was unusable or unsafe.
     #[error(transparent)]
     Rejected(#[from] CallbackRejected),
@@ -99,7 +102,7 @@ impl WebhookError {
             Self::Unreachable(_) => true,
             Self::EchoFailed => false,
             // Routing does not improve with time.
-            Self::NotOurs => false,
+            Self::NotOurs | Self::MissingCryptoProvider(_) => false,
         }
     }
 }
@@ -119,8 +122,9 @@ impl WebhookNotifier {
     pub fn new(config: WebhookConfig) -> Result<Self, WebhookError> {
         // `reqwest` is built without a crypto provider of its own, so the process default has to
         // exist before a client does. See `crate::crypto`.
-        crate::crypto::install_crypto_provider();
+        crate::crypto::install_crypto_provider()?;
         let http = reqwest::Client::builder()
+            .tls_backend_rustls()
             .timeout(config.timeout)
             // A redirect to a private address is the same attack with an extra hop.
             .redirect(reqwest::redirect::Policy::none())

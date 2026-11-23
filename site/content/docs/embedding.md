@@ -14,6 +14,7 @@ compile without `std`.
 |---|---|---|
 | *(none)* | `model`, `schema`, `core` | `serde`, `serde_json`, `jiff`, `rust_decimal`, `thiserror` |
 | `std` *(default)* | `std` implementations, `SystemClock` | — |
+| `tls-ring` *(default)* | ring fallback for TLS roles | `rustls/ring` only when rustls is in use |
 | `client` | the HTTP client | `reqwest`, `tokio`, `url` |
 | `ven` | the VEN runtime loop, on top of `client` | `async-trait` |
 | `conformance` | the black-box suite, on top of `client` | — |
@@ -24,12 +25,12 @@ compile without `std`.
 | `external-auth` | JWT validation against a JWKS | `jsonwebtoken`, `reqwest` |
 | `webhook` | webhook delivery | `reqwest`, `hmac`, `sha2` |
 | `webhook-signature` | verifying a delivery's signature — **`no_std`-capable**, builds for `thumbv7em-none-eabihf` | `hmac`, `sha2` |
-| `mqtt` | the MQTT publisher (with `vtn`) and the VEN's subscriber (with `ven`) | `tokio`, `rustls`, `tokio-rustls`, `webpki-roots` |
+| `mqtt` | standalone MQTT client, OpenADR publisher with `vtn`, subscriber with `ven` | `tokio`, `rustls`, `tokio-rustls`, `webpki-roots` |
 | `mdns` | advertising a local VTN (with `vtn`) and browsing for one (with `ven`) | `mdns-sd` |
 | `tls` | the VTN's own TLS listener, and an optional client-certificate gate | `tokio-rustls`, `hyper`, `hyper-util` |
 
 Every one of those flags is read by a `cfg` somewhere. A feature flag nothing reads is a claim the
-manifest makes and nothing keeps, and CI checks that every combination builds.
+manifest makes and nothing keeps, and CI builds each feature separately as well as the all-features configuration.
 
 Three combinations are worth naming. `ven` is the whole VEN side and pulls in no server;
 `vtn,client` is what the command-line binary wants, because `openadr get` talks to a VTN with the

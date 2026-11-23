@@ -137,6 +137,10 @@ fn the_interop_job_is_read_only_and_holds_no_secrets() {
         "top-level permissions must be contents: read"
     );
     assert!(
+        workflow.contains("persist-credentials: false"),
+        "the checkout must discard its Git credential before the peer starts"
+    );
+    assert!(
         !workflow.contains("secrets."),
         "the interop job must reference no secrets"
     );
@@ -144,4 +148,27 @@ fn the_interop_job_is_read_only_and_holds_no_secrets() {
         !workflow.contains("write"),
         "the interop job must request no write permission"
     );
+}
+
+/// A partial interop artifact must fail before the workflow derives a date or publishes a summary.
+#[cfg(unix)]
+#[test]
+fn interop_requires_both_report_files() {
+    let workflow = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/.github/workflows/interop.yml"
+    ))
+    .unwrap();
+    let script = step_script(&workflow, "Summarise");
+    let dir = std::env::temp_dir().join(format!("openadr-interop-summary-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    std::fs::write(dir.join("interop.json"), "{}").unwrap();
+    let output = std::process::Command::new("bash")
+        .args(["-eu", "-c", &script])
+        .current_dir(&dir)
+        .output()
+        .unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Incomplete interop reading"));
 }

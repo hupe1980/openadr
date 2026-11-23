@@ -73,9 +73,12 @@ $ cargo add openadr --features ven                   # the VEN loop, on top of t
 $ cargo add openadr --features conformance           # measure any VTN
 ```
 
-Features: `std` (default) · `client` · `ven` · `conformance` · `vtn` · `sqlite` · `postgres` ·
+Features: `std` and `tls-ring` (default) · `client` · `ven` · `conformance` · `vtn` · `sqlite` · `postgres` ·
 `internal-auth` · `external-auth` · `webhook` · `webhook-signature` · `mqtt` · `mdns` · `tls`. CI
-builds every combination. See [Embedding and `no_std`](https://hupe1980.github.io/openadr/docs/embedding/).
+builds each feature separately and tests the all-features configuration. See [Embedding and `no_std`](https://hupe1980.github.io/openadr/docs/embedding/).
+
+Embedding a VEN in a service that uses AWS-LC? Disable the default features, enable `ven`,
+and install your rustls provider at startup. See [TLS provider selection](https://hupe1980.github.io/openadr/docs/client/#selecting-a-tls-provider).
 
 ## A durable VTN
 
@@ -138,6 +141,9 @@ $ cargo test --all-features
 $ cargo xtask spec-sync && cargo xtask check-model        # the wire model against the pinned spec
 $ cargo test --all-features --test interop -- --ignored   # the suite against another VTN
 ```
+
+The weekly [Interop workflow](https://github.com/hupe1980/openadr/actions/workflows/interop.yml)
+publishes a dated HTML report and machine-readable JSON for the exact peer image it measured.
 
 ## Specification
 

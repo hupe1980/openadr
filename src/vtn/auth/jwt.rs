@@ -151,8 +151,10 @@ impl JwtAuthenticator {
     pub fn new(config: JwtConfig) -> Result<Self, AuthError> {
         // `reqwest` is built without a crypto provider of its own, so the process default has to
         // exist before a client does. See `crate::crypto`.
-        crate::crypto::install_crypto_provider();
+        crate::crypto::install_crypto_provider()
+            .map_err(|e| AuthError::Unavailable(e.to_string()))?;
         let http = reqwest::Client::builder()
+            .tls_backend_rustls()
             .timeout(config.timeout)
             .build()
             .map_err(|e| AuthError::Unavailable(e.to_string()))?;

@@ -16,30 +16,32 @@
 //! | [`model`] | always on (`no_std` + `alloc`) | wire types, newtypes with invariants, spec sentinels |
 //! | [`schema`] | always on | payload typing from the Alliance enumeration schemas |
 //! | [`core`] | always on | interval expansion, timeline, object privacy, report scheduling |
-//! | [`client`] | `client` | business-logic and VEN HTTP clients, role-checked at compile time |
-//! | [`ven`] | `ven` | the VEN loop: registration, event sync, timeline, report scheduling |
-//! | [`conformance`] | `conformance` | a black-box suite that measures **any** VTN against the specification |
-//! | [`vtn`] | `vtn` | axum VTN server, storage, authentication, the notification outbox |
-//! | [`webhook`] | `webhook-signature` | the webhook signature scheme, both ends of it (`no_std`) |
+//! | [`client`](https://docs.rs/openadr/latest/openadr/client/) | `client` | business-logic and VEN HTTP clients, role-checked at compile time |
+//! | [`ven`](https://docs.rs/openadr/latest/openadr/ven/) | `ven` | the VEN loop: registration, event sync, timeline, report scheduling |
+//! | [`conformance`](https://docs.rs/openadr/latest/openadr/conformance/) | `conformance` | a black-box suite that measures **any** VTN against the specification |
+//! | [`vtn`](https://docs.rs/openadr/latest/openadr/vtn/) | `vtn` | axum VTN server, storage, authentication, the notification outbox |
+//! | [`webhook`](https://docs.rs/openadr/latest/openadr/webhook/) | `webhook-signature` | the webhook signature scheme, both ends of it (`no_std`) |
+//! | `mqtt` | `mqtt` | shared MQTT broker transport |
 //! | [`discovery`] | always on; `mdns` for the socket | finding a local VTN over mDNS/DNS-SD, both ends |
 //!
 //! Storage backends are `sqlite` and `postgres`; authentication backends are `internal-auth` and
 //! `external-auth`; push transports are `webhook` and `mqtt`. Every flag is read by a `cfg`.
-//! `webhook-signature` is the only one that does not imply a role: the signature scheme's receiving
-//! half belongs to a subscriber, and a subscriber is not a server.
+//! A subscriber can enable `webhook-signature` or `mqtt` on its own. TLS roles use the process
+//! provider, with a ring fallback when the default `tls-ring` feature is enabled.
 //!
 //! ## Serving
 //!
 //! ```no_run
-//! use openadr::vtn::{Vtn, store::MemoryStorage};
+//! # #[cfg(feature = "vtn")]
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! use openadr::vtn::{Vtn, store::MemoryStorage};
 //! let vtn = Vtn::builder().storage(MemoryStorage::shared()).build();
 //! vtn.serve("0.0.0.0:3000").await?;
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! [`Vtn::builder`](vtn::Vtn::builder) is a typestate: `build()` exists only once a storage backend
+//! `Vtn::builder` is a typestate: `build()` exists only once a storage backend
 //! has been given, so a VTN with nowhere to put an event is a compile error. Without an
 //! authenticator it serves unauthenticated readers, which is read-only by construction — every
 //! write requires a scope, and an anonymous principal holds none.
@@ -62,7 +64,7 @@
 //!
 //! [`core::Timeline`] then merges a programme's concurrent events by priority, splitting the loser
 //! *around* the winner so a long price curve resumes when a short curtailment ends.
-//! [`ven::VenRuntime`] is that loop with registration, conditional polling and reporting around it.
+//! `ven::VenRuntime` is that loop with registration, conditional polling and reporting around it.
 //!
 //! ## Spec version
 //!
@@ -114,14 +116,9 @@ pub mod discovery;
 
 /// This crate's MQTT 3.1.1 client, shared by the VTN's publisher and the VEN's subscriber.
 ///
-/// Public because its types reach the public API — `QoS` is a field of
-/// [`MqttConfig`](vtn::notify::MqttConfig) — and because a third-party enum in that position made
-/// upgrading a dependency a breaking change to *this* crate, with one settable variant
-/// (`ExactlyOnce`) whose publishes could only ever time out.
-///
-/// `mqtt` implies no role by design, so `--features mqtt` alone enables *neither* — and compiling
-/// this module then would be a module with no caller, which `-D warnings` rightly refuses.
-#[cfg(all(feature = "mqtt", any(feature = "vtn", feature = "ven")))]
+/// Enable `mqtt` to connect directly to a broker. Adding `vtn` or `ven` also enables that
+/// role's OpenADR notification binding.
+#[cfg(feature = "mqtt")]
 pub mod mqtt;
 
 /// One `rustls` decision, shared by everything here that speaks TLS.
@@ -130,7 +127,7 @@ pub mod mqtt;
     feature = "external-auth",
     feature = "tls",
     feature = "webhook",
-    all(feature = "mqtt", any(feature = "vtn", feature = "ven")),
+    feature = "mqtt",
 ))]
 mod crypto;
 
@@ -139,9 +136,9 @@ mod crypto;
     feature = "external-auth",
     feature = "tls",
     feature = "webhook",
-    all(feature = "mqtt", any(feature = "vtn", feature = "ven")),
+    feature = "mqtt",
 ))]
-pub use crypto::install_crypto_provider;
+pub use crypto::{MissingCryptoProvider, install_crypto_provider};
 
 /// `std`/`no_std` bridge. Internal, but public so generated code and examples can use it.
 #[doc(hidden)]

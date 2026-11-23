@@ -9,7 +9,7 @@ $ cargo add openadr --features ven
 ```
 
 [The client](@/docs/client.md) is the transport. This is the loop on top of it: everything a VEN has
-to do that is not business logic, and nothing that is.
+to do that is not business logic, and nothing that is. The runtime uses the TLS provider and trust roots of the client you pass to it. [Configure TLS for an embedded VEN](@/docs/client.md#selecting-a-tls-provider).
 
 ```rust
 use openadr::client::{Client, VirtualEndNode};

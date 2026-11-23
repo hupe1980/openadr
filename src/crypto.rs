@@ -1,24 +1,24 @@
-//! The one decision `rustls` refuses to make for itself.
+//! Process-wide TLS provider selection.
 
-/// Install `ring` as this process's `rustls` crypto provider, once.
+/// No application provider was installed and the ring fallback is disabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error(
+    "no rustls crypto provider installed; call CryptoProvider::install_default at startup or enable openadr's tls-ring feature"
+)]
+pub struct MissingCryptoProvider;
+
+/// Ensure a provider is installed before constructing a TLS transport.
 ///
-/// `rustls` will not choose between compiled-in providers and will not run without one. This crate
-/// builds `reqwest` in its `…-no-provider` shape — the alternative drags in `aws-lc-rs`, a second
-/// provider nothing calls — and names `ring` here instead `[D-112]`. `crate::mqtt` builds its TLS
-/// on the same provider by calling this, which is why there is one and not two.
-///
-/// **Every TLS client and listener this crate builds calls this first**, so an ordinary user never
-/// has to. It is public for the case that is not ordinary: a program building its *own*
-/// `reqwest::Client` or `rustls` configuration in the same process, which would otherwise panic with
-/// `No provider set`. Calling it twice, or after somebody else has installed one, does nothing.
-///
-/// ```no_run
-/// openadr::install_crypto_provider();
-/// let http = reqwest::Client::builder().build().unwrap();
-/// ```
-pub fn install_crypto_provider() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
+/// An application can install its own rustls provider before calling any OpenADR TLS role.
+/// With the default `tls-ring` feature, ring fills an empty process default. Without it,
+/// this returns an actionable error and the application can install a provider and retry.
+pub fn install_crypto_provider()
+-> Result<&'static std::sync::Arc<rustls::crypto::CryptoProvider>, MissingCryptoProvider> {
+    use rustls::crypto::CryptoProvider;
+    #[cfg(feature = "tls-ring")]
+    if CryptoProvider::get_default().is_none() {
+        // A concurrent installer winning this race also satisfies the postcondition.
         let _ = rustls::crypto::ring::default_provider().install_default();
-    });
+    }
+    CryptoProvider::get_default().ok_or(MissingCryptoProvider)
 }

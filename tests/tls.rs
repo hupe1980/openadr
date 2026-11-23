@@ -70,7 +70,7 @@ async fn serve(tls: TlsConfig) -> String {
 async fn serve_with(tls: TlsConfig, storage: SharedStorage, config: VtnConfig) -> String {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    drop(listener);
+    let server_config = tls.server_config().unwrap();
 
     let vtn = Vtn::builder()
         .storage(storage)
@@ -85,18 +85,9 @@ async fn serve_with(tls: TlsConfig, storage: SharedStorage, config: VtnConfig) -
         .build();
 
     tokio::spawn(async move {
-        let _ = vtn.serve_tls(addr, tls).await;
+        let _ = vtn.serve_tls_on(listener, server_config).await;
     });
 
-    // The port was released a moment ago and the listener is being rebound; a handshake against a
-    // closed port fails differently from one against a listener that refuses it, and confusing the
-    // two is how this test would pass for the wrong reason.
-    for _ in 0..100 {
-        if tokio::net::TcpStream::connect(addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
     format!("https://localhost:{}/openadr3/3.1.0", addr.port())
 }
 
@@ -104,7 +95,7 @@ fn client(ca: &str, identity: Option<(&str, &str)>) -> reqwest::Client {
     // Explicitly, rather than relying on the VTN having built its listener first: this crate builds
     // `reqwest` without a provider of its own, and a client built here is not one this crate
     // constructs. Depending on the order would make the test pass for a reason unrelated to TLS.
-    openadr::install_crypto_provider();
+    openadr::install_crypto_provider().unwrap();
     let mut builder = reqwest::Client::builder()
         .add_root_certificate(reqwest::Certificate::from_pem(ca.as_bytes()).unwrap())
         .use_rustls_tls()

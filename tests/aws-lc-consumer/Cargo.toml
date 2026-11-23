@@ -1,0 +1,15 @@
+[package]
+name = "aws-lc-consumer"
+version = "0.0.0"
+edition.workspace = true
+publish = false
+
+[dependencies]
+openadr = { path = "../..", default-features = false, features = ["ven", "tls"] }
+rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net"] }
+serde_json = "1"
+async-trait = "0.1"

@@ -6,8 +6,7 @@
 //!
 //! It speaks nothing but HTTP. Point it at a base URL and hand it credentials and it will run
 //! against the Alliance's reference VTN, against another Rust one, or against something written
-//! this afternoon in Go, exactly as it runs against this one. Nothing here imports
-//! [`crate::vtn`].
+//! this afternoon in Go, exactly as it runs against this one. The suite builds with the `conformance` feature alone.
 //!
 //! ## What a result means
 //!
@@ -158,17 +157,6 @@ impl Report {
             }
         }
         counts
-    }
-
-    /// Whether every **required** check that ran passed.
-    ///
-    /// Skips are excluded rather than counted either way, which is the whole point of having a
-    /// third outcome: a run that could not attempt a check has not shown it works.
-    pub fn is_conformant(&self) -> bool {
-        !self
-            .findings
-            .iter()
-            .any(|f| f.check.severity == Severity::Required && f.outcome.is_failed())
     }
 
     /// The checks that failed.
@@ -511,14 +499,17 @@ mod tests {
     }
 
     #[test]
-    fn a_required_failure_is_the_only_thing_that_makes_a_run_non_conformant() {
+    fn an_extension_failure_does_not_overturn_a_required_pass() {
         let mut report = Report {
             target: "https://vtn.test".into(),
-            findings: vec![finding(
-                "ext",
-                Severity::Extension,
-                Outcome::Failed("no ETag".into()),
-            )],
+            findings: vec![
+                finding("baseline", Severity::Required, Outcome::Passed),
+                finding(
+                    "ext",
+                    Severity::Extension,
+                    Outcome::Failed("no ETag".into()),
+                ),
+            ],
         };
         assert!(
             report.is_conformant(),

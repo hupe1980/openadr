@@ -45,6 +45,16 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
+      - name: Application-selected TLS provider
+        run: |
+          graph=$(cargo tree --locked -p aws-lc-consumer -e features,no-dev -i rustls)
+          grep -F 'rustls feature "aws_lc_rs"' <<< "$graph"
+          if grep -F 'rustls feature "ring"' <<< "$graph"; then exit 1; fi
+          release_graph=$(cargo tree --locked --color never -p openadr --all-features -e normal,build --prefix none)
+          if grep -E '^aws-lc-(rs|sys) v' <<< "$release_graph"; then exit 1; fi
+          cargo test --locked -p aws-lc-consumer
+          cargo test --locked -p openadr --no-default-features --features ven --test missing_provider
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features
 
@@ -272,12 +282,6 @@ jobs:
       - uses: taiki-e/install-action@cargo-deny
       - uses: taiki-e/install-action@cargo-cyclonedx
 
-      # Advisories, licences, banned crates and unknown registries, in one pass. `deny.toml` is
-      # where an unfixable advisory is *recorded with its reason* rather than silenced: every entry
-      # names the crate that pins the vulnerable version and why the affected code path is not
-      # reached here. The ban list is what stops `aws-lc-rs` returning through a dependency's
-      # default features — the crate installs the `ring` provider, and two providers in one binary
-      # is the ambiguity `src/crypto.rs` exists to resolve.
       - name: Advisories, licences and bans
         run: cargo deny check
 

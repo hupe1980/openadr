@@ -36,6 +36,11 @@ enum Verdict {
 }
 
 impl Report {
+    /// True when at least one required check passed and no required check failed.
+    pub fn is_conformant(&self) -> bool {
+        self.verdict() == Verdict::Conformant
+    }
+
     fn verdict(&self) -> Verdict {
         let (passed, failed, _) = self.tally(Severity::Required);
         if failed > 0 {
@@ -302,6 +307,8 @@ mod tests {
             ),
             (check("b", Severity::Extension), Outcome::Passed),
         ]);
+        assert!(!r.is_conformant());
+        assert_eq!(r.to_json()["conformant"], false);
         assert!(r.to_html(&meta()).contains("Nothing was measured"));
         assert_eq!(r.badge(&meta())["message"], "not measured");
         assert_eq!(r.badge(&meta())["color"], "lightgrey");

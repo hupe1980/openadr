@@ -18,6 +18,36 @@ let bl = Client::<BusinessLogic>::builder("https://vtn.example.com/openadr3/3.1.
 let programs = bl.programs().list().await?;
 ```
 
+## Selecting a TLS provider
+
+A normal installation uses ring. To run a VEN with AWS-LC as its only rustls provider, configure the embedding application:
+
+```toml
+[dependencies]
+openadr = { version = "0.6", default-features = false, features = ["ven"] }
+rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs"] }
+```
+
+Install the provider once in application startup, before building any HTTP clients or TLS listeners:
+
+```rust
+use openadr::client::{Client, VirtualEndNode};
+use openadr::ven::VenRuntime;
+
+rustls::crypto::aws_lc_rs::default_provider()
+    .install_default()
+    .expect("install AWS-LC before initializing TLS");
+
+let client = Client::<VirtualEndNode>::builder(vtn_url)?
+    .bearer_token(token)
+    .build()?;
+let runtime = VenRuntime::new(client, config);
+```
+
+For a VTN with a private CA, call `.trust_root_pem(ca_pem)?` on the builder. This adds the CA to the platform trust roots and verifies the VTN hostname. A missing provider returns a construction error even for an HTTP base URL because the client initializes its transport eagerly.
+
+Run `cargo tree -e features,no-dev -i rustls` in the consuming application with its deployment features. For an AWS-LC-only VEN the output should include `aws_lc_rs` and omit `ring`. Cargo unifies features across dependencies. In particular, OpenADR’s optional `postgres` feature selects SQLx’s ring-based TLS backend.
+
 ## The role is a type parameter
 
 ```rust

@@ -38,6 +38,12 @@ use crate::model::{
 /// Why a request failed.
 #[derive(Debug, thiserror::Error)]
 pub enum ClientError {
+    /// TLS requires the embedding application to install a provider.
+    #[error(transparent)]
+    MissingCryptoProvider(#[from] crate::MissingCryptoProvider),
+    /// A private trust bundle contained no certificates.
+    #[error("empty CA bundle: provide a PEM-encoded CERTIFICATE")]
+    EmptyCaBundle,
     /// The base URL could not be parsed or joined.
     #[error("invalid URL: {0}")]
     Url(#[from] url::ParseError),
@@ -124,7 +130,6 @@ impl Credentials {
 }
 
 /// A cached access token.
-#[derive(Debug)]
 struct CachedToken {
     value: String,
     /// When to stop using it. Refreshed early so a request never races the expiry.
@@ -145,15 +150,24 @@ impl Role for BusinessLogic {}
 impl Role for VirtualEndNode {}
 
 /// Builds a [`Client`].
-#[derive(Debug)]
 pub struct ClientBuilder<R> {
     base: Url,
     credentials: Option<Credentials>,
     bearer_token: Option<String>,
     timeout: StdDuration,
     user_agent: String,
+    trusted_roots: Vec<reqwest::Certificate>,
     adapters: AdapterChain,
     role: PhantomData<R>,
+}
+
+// Only the origin is safe to log. The URL, credentials and cached tokens can contain secrets.
+impl<R> std::fmt::Debug for ClientBuilder<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClientBuilder")
+            .field("origin", &self.base.origin().ascii_serialization())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<R: Role> ClientBuilder<R> {
@@ -185,6 +199,17 @@ impl<R: Role> ClientBuilder<R> {
         self
     }
 
+    /// Trust additional PEM-encoded CA certificates for a private VTN.
+    /// Platform roots and server name verification remain enabled.
+    pub fn trust_root_pem(mut self, pem: &[u8]) -> Result<Self, ClientError> {
+        let roots = reqwest::Certificate::from_pem_bundle(pem)?;
+        if roots.is_empty() {
+            return Err(ClientError::EmptyCaBundle);
+        }
+        self.trusted_roots.extend(roots);
+        Ok(self)
+    }
+
     /// Override the `User-Agent`.
     pub fn user_agent(mut self, ua: impl Into<String>) -> Self {
         self.user_agent = ua.into();
@@ -211,8 +236,10 @@ impl<R: Role> ClientBuilder<R> {
     pub fn build(self) -> Result<Client<R>, ClientError> {
         // `reqwest` is built without a crypto provider of its own, so the process default has to
         // exist before a client does. See `crate::crypto`.
-        crate::crypto::install_crypto_provider();
+        crate::crypto::install_crypto_provider()?;
         let http = reqwest::Client::builder()
+            .tls_backend_rustls()
+            .tls_certs_merge(self.trusted_roots)
             .timeout(self.timeout)
             .user_agent(self.user_agent)
             .build()?;
@@ -230,7 +257,6 @@ impl<R: Role> ClientBuilder<R> {
     }
 }
 
-#[derive(Debug)]
 struct Inner {
     base: Url,
     http: reqwest::Client,
@@ -241,10 +267,18 @@ struct Inner {
 }
 
 /// A VTN client.
-#[derive(Debug)]
 pub struct Client<R> {
     inner: Arc<Inner>,
     role: PhantomData<R>,
+}
+
+// Only the origin is safe to log. The URL, credentials and cached tokens can contain secrets.
+impl<R> std::fmt::Debug for Client<R> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Client")
+            .field("origin", &self.inner.base.origin().ascii_serialization())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<R> Clone for Client<R> {
@@ -272,6 +306,7 @@ impl<R: Role> Client<R> {
             bearer_token: None,
             timeout: StdDuration::from_secs(30),
             user_agent: concat!("openadr-rs/", env!("CARGO_PKG_VERSION")).to_string(),
+            trusted_roots: Vec::new(),
             adapters: AdapterChain::new(),
             role: PhantomData,
         })
@@ -1090,6 +1125,25 @@ impl Collection<'_, BusinessLogic, Report, ReportRequest> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn debug_output_omits_credentials_and_cached_tokens() {
+        // 032-tls-provider/SR-002
+        let builder = Client::<VirtualEndNode>::builder("https://vtn.invalid/path-secret/")
+            .unwrap()
+            .bearer_token("bearer-secret")
+            .credentials(Credentials::new("id", "client-secret"));
+        let before = format!("{builder:?}");
+        let client = builder.build().unwrap();
+        *client.inner.token.lock().unwrap() = Some(CachedToken {
+            value: "cache-secret".into(),
+            refresh_at: Instant::now(),
+        });
+        for output in [before, format!("{client:?}")] {
+            assert!(output.contains("vtn.invalid"));
+            assert!(!output.contains("secret"));
+        }
+    }
 
     #[test]
     fn a_missing_trailing_slash_does_not_eat_the_base_path() {

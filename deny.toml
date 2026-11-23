@@ -54,10 +54,6 @@ license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-# `rustls` refuses to choose between compiled-in crypto providers, and this tree can pull both.
-# `crate::crypto` names ring explicitly for that reason; banning the other one here is what stops a
-# future dependency quietly reintroducing the ambiguity.
-deny = [{ name = "aws-lc-rs", reason = "the crate installs the ring provider; see src/crypto.rs" }]
 
 [sources]
 unknown-registry = "deny"

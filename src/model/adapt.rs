@@ -20,7 +20,7 @@ pub const PRESERVED_PREFIX: &str = "x-openadr-preserved-";
 ///
 /// The two directions are named from the point of view of *this* process, not of a server: a body
 /// arriving is inbound whether it is a response to a request we made or a request somebody made of
-/// us. The only consumer today is [`Client`](crate::client::Client), where `inbound` runs on
+/// us. The only consumer today is `client::Client`, where `inbound` runs on
 /// responses and `outbound` on request bodies.
 pub trait WireAdapter: core::fmt::Debug + Send + Sync {
     /// Stable name, for logs and configuration.

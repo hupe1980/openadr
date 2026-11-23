@@ -1,11 +1,17 @@
 # Changelog
 
-Notable changes to `openadr`. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and versions follow [Semantic Versioning](https://semver.org/spec/v2.0.0.html) — with the 0.x caveat
-that a minor release may break.
+## [0.6.0] — 2026-11-23
 
-Entries cite `D-nnn`: the project's architecture decision records, which carry the reasoning and the
-alternative each change rejected. Unfinished work is tracked separately and does not appear here.
+- Weekly interop readings include HTML and JSON, the UTC measurement time and the peer image digest.
+  Infrastructure failures now fail the job before publication. A JSON report with zero attempted
+  required checks returns `conformant: false`.
+- The typed client and VEN can use an application-installed rustls provider, including AWS-LC.
+  Default installations use the new `tls-ring` fallback. With default features disabled, install
+  a provider at startup or explicitly enable `tls-ring`.
+- **Breaking:** `install_crypto_provider()` returns a result when no provider is available.
+- The `mqtt` feature exposes the shared broker transport when used on its own.
+- Client and builder debug output omits credentials, cached tokens and URL paths.
+- `ClientBuilder::trust_root_pem` adds a private CA. `Vtn::serve_tls_on` serves a pre-bound TLS listener.
 
 ## [0.5.1] — 2026-11-21
 

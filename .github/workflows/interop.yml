@@ -20,18 +20,29 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Measure
         env:
-          OPENADR_INTEROP_JSON: interop.json
-        run: cargo test --all-features --test interop -- --ignored --nocapture
-      - name: Summarise
-        if: always()
+          PEER: ghcr.io/openleadr/openleadr-rs:latest
+          OPENADR_INTEROP_JSON: ${{ runner.temp }}/interop.json
         run: |
-          [ -f interop.json ] || { echo "Nothing was measured." >> "$GITHUB_STEP_SUMMARY"; exit 0; }
+          docker pull --platform linux/amd64 "$PEER"
+          OPENADR_PEER_IMAGE=$(docker image inspect --format '{{index .RepoDigests 0}}' "$PEER")
+          export OPENADR_PEER_IMAGE
+          cargo test --locked --all-features --test interop -- --ignored --nocapture
+      - name: Summarise
+        id: reading
+        working-directory: ${{ runner.temp }}
+        run: |
+          test -s interop.json && test -s interop.html || { echo "Incomplete interop reading"; exit 1; }
+          generated=$(jq -er .generated interop.json)
+          echo "date=${generated%%T*}" >> "$GITHUB_OUTPUT"
           {
-            echo "## Interop — $(date -u +%F) — $(jq -r .target interop.json)"
+            echo "## Interop — $generated"
+            jq -r '"Peer: `" + .target + "`"' interop.json
             echo
             for sev in required recommended extension; do
               jq -r --arg s "$sev" '[.findings[] | select(.severity == $s)] | select(length > 0) |
@@ -41,8 +52,12 @@ jobs:
             jq -r '.findings[] | select(.outcome == "failed") | "- `\(.id)` (\(.severity)) — \(.title)"' interop.json
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
-          name: interop
-          path: interop.json
-          if-no-files-found: ignore
+          name: interop-${{ steps.reading.outputs.date }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/interop.json
+            ${{ runner.temp }}/interop.html
+          if-no-files-found: error
+      - name: Explain missing reading
+        if: failure()
+        run: echo "The interop reading was not published. See the failed step for details." >> "$GITHUB_STEP_SUMMARY"

@@ -1382,8 +1382,8 @@ async fn forever_duration_round_trips(run: &Runner) -> Outcome {
         expect(
             created["intervalPeriod"]["duration"] == "P9999Y",
             format!(
-                "a P9999Y duration came back as {}; the value means \"no end\" and a VTN that \
-                 normalises it has changed the schedule",
+                "expected the P9999Y infinity sentinel on the wire, received {}; readers that \
+                 recognise only the canonical spelling can treat this as a finite interval",
                 created["intervalPeriod"]["duration"]
             ),
         )

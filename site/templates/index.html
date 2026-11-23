@@ -23,7 +23,7 @@
   "downloadUrl": {{ config.extra.crate | json_encode | safe }},
   "programmingLanguage": "Rust",
   "runtimePlatform": "Rust 1.96+, no_std + alloc, WebAssembly",
-  "license": "https://spdx.org/licenses/Apache-2.0.html",
+  "license": "Apache-2.0 OR MIT",
   "isAccessibleForFree": true,
   "keywords": "OpenADR, OpenADR 3.1, demand response, smart grid, VTN server, VEN runtime, Rust, energy flexibility, grid-aware charging, object privacy, MQTT, webhooks, mDNS"
 }
@@ -36,9 +36,8 @@
     <p class="eyebrow">OpenADR 3.1 · Rust · Apache-2.0 OR MIT</p>
     <h1>OpenADR 3.1 in Rust — a VTN server, a VEN runtime and a typed client.</h1>
     <p class="lede">
-      Demand response without the parts that lose a dispatch instruction. One crate, sliced with
-      Cargo features: it runs on a Raspberry Pi with SQLite and on a cluster with PostgreSQL, and
-      the wire model compiles for a microcontroller.
+      Run a VTN with SQLite or PostgreSQL, embed a VEN with your application’s TLS provider,
+      or use the wire model on a microcontroller.
     </p>
     <p class="cta">
       <a class="button primary" href="{{ get_url(path='@/docs/getting-started.md') | safe }}">Get started</a>
@@ -67,7 +66,7 @@
 </section>
 
 <section class="wrap">
-  <h2>What it does that the alternatives do not</h2>
+  <h2>Implementation features</h2>
   <div class="cards">
 
     <article class="card">

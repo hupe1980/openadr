@@ -40,25 +40,16 @@ struct Stack {
     broker_port: u16,
 }
 
-/// Whether there is a Docker daemon to talk to.
-///
-/// Asked separately so the two outcomes stay distinguishable: no Docker is a legitimate skip, and a
-/// compose file that will not build is a failure.
-fn docker_is_available() -> bool {
-    std::process::Command::new("docker")
-        .args(["info", "--format", "{{.ServerVersion}}"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
-}
-
 impl Stack {
     async fn start() -> Option<Self> {
-        if let (Ok(vtn), Ok(broker)) = (
-            std::env::var("OPENADR_VTN_URL"),
-            std::env::var("OPENADR_BROKER"),
-        ) {
+        let vtn = std::env::var("OPENADR_VTN_URL").ok();
+        let broker = std::env::var("OPENADR_BROKER").ok();
+        assert_eq!(
+            vtn.is_some(),
+            broker.is_some(),
+            "set both OPENADR_VTN_URL and OPENADR_BROKER to use an existing stack"
+        );
+        if let (Some(vtn), Some(broker)) = (vtn, broker) {
             let (host, port) = broker.rsplit_once(':')?;
             let stack = Self {
                 _compose: None,
@@ -69,11 +60,6 @@ impl Stack {
             // The same readiness gate as the compose path: a stack somebody else started is not
             // necessarily one whose broker can reach its VTN yet.
             return stack.wait_until_ready().await.then_some(stack);
-        }
-
-        if !docker_is_available() {
-            eprintln!("skipping: no Docker");
-            return None;
         }
 
         // The shipped file, built and run as shipped. Re-creating the wiring here would test a
@@ -135,14 +121,14 @@ impl Stack {
             tokio::time::sleep(Duration::from_secs(1)).await;
         }
         eprintln!(
-            "skipping: the broker never settled into answering with the VTN's decisions — a good \
+            "the broker never settled into answering with the VTN's decisions — a good \
              credential and a bad one did not get different answers"
         );
         false
     }
 
     async fn wait_until_serving(&self) -> bool {
-        openadr::install_crypto_provider();
+        openadr::install_crypto_provider().unwrap();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(5))
             .build()
@@ -158,7 +144,7 @@ impl Stack {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-        eprintln!("skipping: the VTN never answered GET /auth/server");
+        eprintln!("the VTN never answered GET /auth/server");
         false
     }
 
@@ -392,9 +378,9 @@ async fn targeted_event(bl: &Client<BusinessLogic>, program: &str, name: &str, t
 // Enforced by a real broker calling the real callbacks, which is the only arrangement in which
 // "enforce" means anything.
 async fn object_privacy_holds_across_a_real_broker() {
-    let Some(stack) = Stack::start().await else {
-        return;
-    };
+    let stack = Stack::start()
+        .await
+        .expect("broker test requires a ready VTN and broker with reachable ports");
     let bl = stack.business_logic();
     let run = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

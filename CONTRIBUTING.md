@@ -66,21 +66,10 @@ PDF — have moved since `inputs.lock` recorded them; CI runs it weekly and file
 
 ## Cutting a release
 
-Move the unreleased section of [CHANGELOG.md](CHANGELOG.md) under its version, bump
-`workspace.package.version`, then tag:
-
-```console
-$ git tag v0.2.0 && git push origin v0.2.0
-```
-
-`.github/workflows/release.yml` runs `ci.yml` itself at the tagged commit — every job of it, not a
-copy of some of them — then checks the tag against `Cargo.toml`, checks the `.crate` holds only the
-library, publishes to crates.io, uploads static musl and macOS binaries with checksums, pushes a
-cosign-signed multi-architecture image to `ghcr.io`, and attaches a CycloneDX SBOM to the GitHub
-release.
-
-One secret: `CARGO_REGISTRY_TOKEN`, a crates.io API token scoped to `publish-update` and to this
-crate. Everything else uses `GITHUB_TOKEN` or the run's OIDC identity.
+Update the changelog, workspace version and lockfile. Commit the release, then push the matching
+`v<version>` tag. The release workflow checks the tagged commit, publishes the crate through
+crates.io Trusted Publishing, and distributes CLI binaries, checksums, a CycloneDX SBOM, a signed
+container image and a Homebrew formula. The Homebrew job uses a GitHub App scoped to the tap.
 
 ## What a change should come with
 
@@ -106,12 +95,6 @@ crate. Everything else uses `GITHUB_TOKEN` or the run's OIDC identity.
   `thumbv7em-none-eabihf` and `wasm32-unknown-unknown`. CI checks it.
 - **A feature flag no `cfg` reads is a claim the manifest makes and nothing keeps.** Same for a
   function with no caller.
-
-## Where help is most wanted
-
-1. Running the conformance suite against other implementations, and publishing the matrix.
-2. Profile validators for the deployed Dutch and Belgian profiles.
-3. Load testing the notification fan-out, so its cost stops being an argument and becomes a number.
 
 ## Licence
 

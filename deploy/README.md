@@ -30,7 +30,7 @@ $ docker run --rm -p 127.0.0.1:3000:3000 ghcr.io/hupe1980/openadr \
 For an interoperability harness, a VTN with known clients and no bootstrap step:
 
 ```console
-$ docker run --rm -p 3000:3000 ghcr.io/hupe1980/openadr vtn --listen 0.0.0.0:3000 --ephemeral \
+$ docker run --rm -p 127.0.0.1:3000:3000 ghcr.io/hupe1980/openadr vtn --listen 0.0.0.0:3000 --ephemeral \
       --client bl-1:bl-secret:bl --client ven-1:ven-secret:ven
 $ openadr conformance --url http://localhost:3000/openadr3/3.1.0 \
       --bl-client bl-1:bl-secret --ven-client ven-1:ven-secret --ven-client-id ven-1

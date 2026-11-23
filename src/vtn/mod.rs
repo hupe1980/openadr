@@ -713,11 +713,21 @@ impl Vtn {
             .server_config()
             .map_err(|e| std::io::Error::other(e.to_string()))?;
         let listener = tokio::net::TcpListener::bind(addr).await?;
+        self.serve_tls_on(listener, server_config).await
+    }
+
+    /// Serve HTTPS on a listener already bound by the application.
+    /// Prepare the server configuration with [`tls::TlsConfig::server_config`].
+    #[cfg(feature = "tls")]
+    pub async fn serve_tls_on(
+        &self,
+        listener: tokio::net::TcpListener,
+        server_config: rustls::ServerConfig,
+    ) -> std::io::Result<()> {
         tracing::info!(
             addr = ?listener.local_addr()?,
             base_path = %self.state.config.base_path,
             scheme = "https",
-            client_certificates = config.asks_for_client_certificates(),
             "VTN listening"
         );
         let background = self.spawn_background();
