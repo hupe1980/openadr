@@ -135,8 +135,8 @@ See [the VEN runtime](https://hupe1980.github.io/openadr/docs/ven-runtime/) and
 Pre-1.0 breaking changes are listed in [CHANGELOG.md](CHANGELOG.md). For the Rust API, Cargo
 features, compiler floor and scriptable CLI, see [Compatibility](https://hupe1980.github.io/openadr/docs/compatibility/).
 
-Integration tests exercise PostgreSQL, Keycloak, MQTT, TLS and mDNS. The traceability check covers
-all 34 specification sections with normative prose. See [implementation status and limits](https://hupe1980.github.io/openadr/docs/status/).
+Integration tests exercise PostgreSQL, Keycloak, MQTT, TLS and mDNS. Tests or conformance checks cite the
+sections containing all 34 tracked normative statements. See [implementation status and limits](https://hupe1980.github.io/openadr/docs/status/).
 
 ```console
 $ cargo test --all-features

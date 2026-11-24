@@ -6,29 +6,29 @@ weight = 110
 
 ## Built and tested
 
-| | Cargo feature | |
-|---|---|---|
-| Wire model — six objects, request/response split, sentinels, adapters | always on | Complete |
-| Payload schema — all six Alliance enumeration files, generated: 75 payload types, units, reading types | always on | Complete |
-| Domain core — interval expansion, timelines, object privacy, report schedules | always on | Complete |
-| VTN — every endpoint, scopes, object privacy, `problem` bodies, `ETag` | `vtn` | Complete |
-| Storage — in-memory, SQLite, PostgreSQL | `sqlite`, `postgres` | Complete |
-| Authentication — own token endpoint, JWKS, pre-shared, anonymous | `internal-auth`, `external-auth` | Complete |
-| Notification outbox — transactional, leased, concurrent, capped backoff, a circuit breaker for dead subscribers | `vtn` | Complete |
-| Report retention — bounded, oldest-first, off by default | `vtn` | Complete |
-| Webhook delivery — echo challenge, SSRF guard, HMAC, no redirects | `webhook` | Complete |
-| Client — role as a type parameter, conditional reads, pagination, adapters | `client` | Complete |
-| MQTT — discovery, topic endpoints, per-VEN fan-out, QoS 1 publisher, broker ACL callbacks, VEN-side subscriber | `mqtt` | Complete |
-| Deployment — EMQX and Mosquitto configurations, a compose file, an assertion script | — | Complete |
-| Local discovery — `_openadr3._tcp` advertised by the VTN, browsed by `openadr discover` | `mdns` | Complete |
-| VEN runtime — registration, conditional sync, timelines, reports, clock-skew guard, push hints | `ven` | Complete |
-| Command line — `openadr vtn`, `dev`, `trigger`, `explain`, and `get`/`post`/`put`/`delete`/`watch` | `vtn`, `client` | Complete |
-| Inspector — timeline, who sees what, deliveries; `/_inspect` | `vtn` | Complete |
-| Observability — `GET /metrics`, dead-letter and subscriber-health views, retry | `vtn` | Complete |
-| Transport security — TLS 1.2+ with ALPN, and a client CA that gates the connection | `tls` | Complete |
-| OpenAPI — `GET /openapi.json`, narrowed to what this deployment serves, named by the mDNS record | `vtn` | Complete |
-| Conformance kit — black-box, 52 clause-citing checks against any VTN, 51 proven able to fail; HTML report, badge, GitHub Action | `conformance` | Complete; weekly against another implementation |
-| External auth — end-to-end against a real Keycloak: realm, client-credentials grant, token, write | `external-auth` | Complete |
+| Capability | Cargo feature |
+|---|---|
+| Wire model — six objects, request/response split, sentinels, adapters | always on |
+| Payload schema — all six Alliance enumeration files, generated: 75 payload types, units, reading types | always on |
+| Domain core — interval expansion, timelines, object privacy, report schedules | always on |
+| VTN — every endpoint, scopes, object privacy, `problem` bodies, `ETag` | `vtn` |
+| Storage — in-memory, SQLite, PostgreSQL | `sqlite`, `postgres` |
+| Authentication — own token endpoint, JWKS, pre-shared, anonymous | `internal-auth`, `external-auth` |
+| Notification outbox — transactional, leased, concurrent, capped backoff, a circuit breaker for dead subscribers | `vtn` |
+| Report retention — bounded, oldest-first, off by default | `vtn` |
+| Webhook delivery — echo challenge, SSRF guard, HMAC, no redirects | `webhook` |
+| Client — role as a type parameter, conditional reads, pagination, adapters | `client` |
+| MQTT — discovery, topic endpoints, per-VEN fan-out, QoS 1 publisher, broker ACL callbacks, VEN-side subscriber | `mqtt` |
+| Deployment — EMQX and Mosquitto configurations, Docker Compose and a broker integration test | — |
+| Local discovery — `_openadr3._tcp` advertised by the VTN, browsed by `openadr discover` | `mdns` |
+| VEN runtime — registration, conditional sync, timelines, reports, clock-skew guard, push hints | `ven` |
+| Command line — `openadr vtn`, `dev`, `trigger`, `explain`, and `get`/`post`/`put`/`delete`/`watch` | `vtn`, `client` |
+| Inspector — timeline, who sees what, deliveries; `/_inspect` | `vtn` |
+| Observability — `GET /metrics`, dead-letter and subscriber-health views, retry | `vtn` |
+| Transport security — TLS 1.2+ with ALPN, and a client CA that gates the connection | `tls` |
+| OpenAPI — `GET /openapi.json`, narrowed to what this deployment serves, named by the mDNS record | `vtn` |
+| Conformance kit — black-box, 52 clause-citing checks against any VTN, 51 proven able to fail; HTML report, badge, GitHub Action | `conformance` |
+| External auth — end-to-end against a real Keycloak: realm, client-credentials grant, token, write | `external-auth` |
 
 CI exercises the HTTP API, VEN runtime, TLS providers, storage backends, MQTT broker and Keycloak.
 Run the load and external interoperability measurements with the instructions in
@@ -44,13 +44,12 @@ Each citation is graded by where it is written: a `clause` in the conformance su
 one inside a test is a **test**, and anything else is a **mention** — a claim by whoever wrote the
 comment.
 
-**34 of 34 are named by a check or a test**, nothing exempted, and the number is a ratchet: a release
-that lets it fall fails the build.
+All 34 tracked normative statements appear in sections cited by a test or conformance check.
+CI enforces that coverage. A section with several statements can be covered by a single citation.
 
-The unit is the section, so a section carrying three requirements is credited by a test covering one
-of them.
+## Deployment limits
 
-## What it does not do
+The project has not obtained Alliance certification.
 
 **Issue or renew certificates.** `--tls-cert`/`--tls-key` serve TLS 1.2+ directly and
 `--tls-client-ca` gates the connection, but there is no ACME, no rate limiting, and no mapping from a
