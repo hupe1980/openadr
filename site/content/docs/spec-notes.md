@@ -300,12 +300,19 @@ and `/resources` the parameter is *only* a filter: those collections are gated b
 §Object Privacy says target hiding is deliberately not performed on them, so a VEN reads its own
 objects with their full targets and without naming any.
 
-**Numeric precision.** Payload values are decimals, exchanged as JSON numbers. JSON numbers are
-IEEE-754 doubles on the wire, so a round trip is exact to about fifteen significant digits — far
-beyond anything the enumerations describe. Arithmetic on a parsed value is exact base-10 arithmetic,
-which is the half that matters for settlement. Exchanging longer values would require
-`serde_json/arbitrary_precision`, a global feature that changes `serde_json::Value` for every crate
-in a downstream dependency graph.
+<a id="numeric-precision"></a>
+**Numeric precision.** Send prices, capacities and curve coordinates as JSON numbers. For example,
+`7.56` decodes to decimal 7.56 and `{"x":1.5,"y":-2.25}` decodes to a point. Each point needs
+one `x` and one `y`. Use signed 64-bit values for integer payloads. A top-level quoted
+`"7.56"` is a string payload.
+
+Cargo can enable `serde_json/arbitrary_precision` through another dependency, including
+`cls-eedi`. Both builds use the same payload API and binary64 conversion for fractional values.
+The wire carries decimal text. Binary64 provides roughly 15 significant digits, and
+`Decimal` can store up to 28 fractional digits. Additional digits can round during conversion.
+Arithmetic on the decoded value uses `Decimal`. In arbitrary-precision mode
+serde_json reserves the singleton object with the key `$serde_json::private::Number` for its own
+number representation. Avoid this spelling in extensions.
 
 **MQTT topic names.** The specification defines the *endpoints* that publish topic names, not the
 names themselves. Ours are `{prefix}/{collection}/{operation}`, with

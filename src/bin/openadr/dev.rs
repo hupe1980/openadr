@@ -33,12 +33,14 @@ pub fn print_help() {
         r#"openadr dev — a VTN with two clients and seeded data that moves, in one command
 
 USAGE:
-    openadr dev [OPTIONS] [any `openadr vtn` option]
+    openadr dev [OPTIONS] [VTN options]
 
 OPTIONS:
     --listen <ADDR>        where to listen [default: 127.0.0.1:3000]; a non-loopback address
                            also needs --ephemeral, because the credentials are printed
     --env-file <PATH>      where to write the credentials [default: .openadr-dev.env]
+
+    Server configuration flags pass through to the VTN. Dev supplies its own clients and tokens.
 
 WHAT YOU GET:
     clients        bl-1 (business logic) and ven-1 (VEN), secrets generated per run

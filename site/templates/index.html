@@ -66,136 +66,28 @@
 </section>
 
 <section class="wrap">
-  <h2>Implementation features</h2>
+  <h2>Working with OpenADR</h2>
   <div class="cards">
-
     <article class="card">
-      <h3>Object privacy on every path</h3>
-      <p>
-        A charge point operator must never learn which other groups an event targets — that is a
-        competitor's dispatch schedule. One <code>Access</code> value decides visibility for REST
-        reads, webhook delivery <em>and</em> MQTT topic routing, and renders itself into the
-        <code>WHERE</code> clause so filtering happens inside the query rather than over a page that
-        has already been cut.
-      </p>
-      <p class="note">
-        On a broker the VTN answers the authorization callback too, so one VEN cannot subscribe to
-        another's topic — which the specification requires and leaves entirely to the implementer.
-      </p>
+      <h3>Decimal payloads</h3>
+      <p>Represent prices, site import caps and curve coordinates as decimals, including a 7.56 kW cap when a dependency enables <code>serde_json/arbitrary_precision</code>.</p>
+      <a href="{{ get_url(path='@/docs/spec-notes.md') | safe }}#numeric-precision">Numeric precision →</a>
     </article>
-
     <article class="card">
-      <h3>A dispatch instruction cannot be lost</h3>
-      <p>
-        Notifications are written to a transactional outbox in the <em>same transaction</em> as the
-        object that caused them, then delivered by a leased dispatcher. There is no window in which
-        an event exists and nobody has been told — and nothing in OpenADR can say afterwards that a
-        notification was never sent.
-      </p>
-      <p class="note">
-        Every queued entry names the transport that owns it, so an entry nothing can send is
-        reported as undeliverable rather than deleted as sent.
-      </p>
+      <h3>Object privacy</h3>
+      <p>The same visibility rules govern REST reads, webhook delivery and per-VEN MQTT topics.</p>
+      <a href="{{ get_url(path='@/docs/object-privacy.md') | safe }}">Access rules →</a>
     </article>
-
     <article class="card">
-      <h3>Interoperability is measured</h3>
-      <p>
-        <code>openadr conformance</code> runs 52 black-box checks against <em>any</em> OpenADR 3.1
-        VTN, each citing the sentence of the specification it tests, and writes a report you can
-        send: one HTML page, a badge, and a GitHub Action for your own CI. A check that could not
-        run is a skip, never a pass.
-      </p>
-      <p class="note">
-        The suite is measured too: run against deliberately broken VTNs, 51 of the 52 checks are
-        proven able to fail. It runs weekly against another implementation's current release.
-      </p>
+      <h3>Notification delivery</h3>
+      <p>The VTN records notifications in the same transaction as the event. Operators can inspect and retry undelivered messages.</p>
+      <a href="{{ get_url(path='@/docs/notifications.md') | safe }}">Notification transports →</a>
     </article>
-
     <article class="card">
-      <h3>Money is decimal</h3>
-      <p>
-        Payload values are prices, fees and capacities — settled money.
-        <code>Value::Number</code> holds a <code>rust_decimal::Decimal</code>, not an
-        <code>f64</code>, so <code>0.1&nbsp;+&nbsp;0.2&nbsp;==&nbsp;0.3</code> holds exactly and a
-        tariff round-trips through JSON unchanged.
-      </p>
+      <h3>Conformance testing</h3>
+      <p>Run 52 checks against a VTN. Use the exit status in CI or share the HTML report with a peer.</p>
+      <a href="{{ get_url(path='@/docs/conformance.md') | safe }}">Run the suite →</a>
     </article>
-
-    <article class="card">
-      <h3>The specification's sentinels are types</h3>
-      <p>
-        <code>P9999Y</code> means "forever" and <code>0001-01-01</code> means "now". Left as strings
-        they are one forgotten comparison away from a schedule that runs for nine thousand years.
-        Here they are <code>Duration::Forever</code> and <code>StartTime::Now</code> — the match arm
-        has to exist.
-      </p>
-    </article>
-
-    <article class="card">
-      <h3>Polling is the normal case, and push is a hint</h3>
-      <p>
-        Because in every deployment surveyed polling is what happens: Dutch grid-aware charging
-        re-reads a 48-hour window, Belgian NetFlex clients poll their schedule, Californian price
-        clients poll hourly. Every <code>GET</code> carries an <code>ETag</code>, and both the
-        client and the VEN runtime use it — a quiet cycle costs a <code>304</code> with no body.
-      </p>
-      <p class="note">
-        MQTT push is here on both ends, and the VEN never reads a notification's payload: it wakes
-        the loop, the loop re-reads from the VTN. A broker can cost a VEN latency; it cannot cost it
-        correctness.
-      </p>
-    </article>
-
-    <article class="card">
-      <h3>The intervals an event does not list still exist</h3>
-      <p>
-        A tariff that loops for ever and a capability forecast that declares no intervals at all are
-        both ordinary indexing into one sequence: interval fifty thousand of an hourly tariff
-        running since 2020 costs two multiplications, not fifty thousand clones.
-      </p>
-      <p class="note">
-        It is what makes <code>repeat: -1</code> and <code>numIntervals: 48</code> mean what the
-        User Guide's own worked scenarios say they mean.
-      </p>
-    </article>
-
-    <article class="card">
-      <h3>Authentication is a trait, with three real backends</h3>
-      <p>
-        Fluvius forbids OAuth2 and requires mutual TLS. Californian price servers are anonymous.
-        Dutch grid-aware charging uses Keycloak. A VTN that assumes one of those cannot serve the
-        others, so this one runs its own token endpoint, validates somebody else's JWTs against a
-        JWKS, or accepts a pre-shared token.
-      </p>
-    </article>
-
-    <article class="card">
-      <h3>It runs where the load is</h3>
-      <p>
-        The wire model, the payload schema and the domain core are <code>no_std</code> + alloc and
-        build for <code>thumbv7em-none-eabihf</code> and WebAssembly — the appliance-class VEN the
-        specification's own security chapter has in mind. No C <em>library</em> has to be installed
-        for any feature: no OpenSSL, no Avahi, nothing for <code>pkg-config</code> to find, and
-        <code>cargo deny</code> keeps it that way.
-      </p>
-    </article>
-
-    <article class="card">
-      <h3>The single binary is actually single</h3>
-      <p>
-        <code>--tls-cert</code> and <code>--tls-key</code> serve HTTPS directly, so a site controller
-        needs no reverse proxy in front of it; <code>--tls-client-ca</code> refuses a connection
-        whose certificate that CA did not issue, during the handshake.
-      </p>
-      <p class="note">
-        And it describes itself: <code>GET /openapi.json</code> covers the VTN you fetched it from,
-        with the broker endpoints absent when there is no broker — named by
-        <code>openapi_url</code> in the mDNS record, so a VEN that finds the VTN can read its API
-        without being told anything else.
-      </p>
-    </article>
-
   </div>
 </section>
 
@@ -258,39 +150,11 @@ loop {
   <p><a class="more" href="{{ get_url(path='@/docs/ven-runtime.md') | safe }}">The VEN runtime →</a></p>
 </section>
 
-<section class="wrap prose">
-  <h2>Where it stands</h2>
-  <table class="status">
-    <thead><tr><th>Layer</th><th>Cargo feature</th><th>State</th></tr></thead>
-    <tbody>
-      <tr><td>Wire model, payload schema, domain core</td><td>always on, <code>no_std</code></td><td class="yes">Complete</td></tr>
-      <tr><td>VTN server — every endpoint, scopes, object privacy, <code>ETag</code>, metrics</td><td><code>vtn</code></td><td class="yes">Complete</td></tr>
-      <tr><td>Storage — in-memory, SQLite, PostgreSQL</td><td><code>sqlite</code>, <code>postgres</code></td><td class="yes">Complete</td></tr>
-      <tr><td>Authentication — own token endpoint, JWKS, pre-shared, anonymous</td><td><code>internal-auth</code>, <code>external-auth</code></td><td class="yes">Complete</td></tr>
-      <tr><td>Webhook delivery — echo challenge, SSRF guard, signed payloads, outbox</td><td><code>webhook</code></td><td class="yes">Complete</td></tr>
-      <tr><td>MQTT — per-VEN fan-out, QoS 1 publisher, broker authorization callbacks, VEN-side subscriber</td><td><code>mqtt</code></td><td class="yes">Complete</td></tr>
-      <tr><td>Typed client — role as a type parameter, conditional reads</td><td><code>client</code></td><td class="yes">Complete</td></tr>
-      <tr><td>VEN runtime — registration, sync, timeline, reports, clock guard, push hints</td><td><code>ven</code></td><td class="yes">Complete</td></tr>
-      <tr><td>Local discovery — <code>_openadr3._tcp</code>, advertised and browsed</td><td><code>mdns</code></td><td class="yes">Complete</td></tr>
-      <tr><td>Transport security — TLS 1.2+, and a client CA that gates the connection</td><td><code>tls</code></td><td class="yes">Complete</td></tr>
-      <tr><td>OpenAPI — <code>GET /openapi.json</code>, narrowed to what this VTN serves</td><td><code>vtn</code></td><td class="yes">Complete</td></tr>
-      <tr><td>Report retention — bounded, oldest-first, off by default</td><td><code>vtn</code></td><td class="yes">Complete</td></tr>
-      <tr><td>Conformance suite — 52 clause-citing checks against any VTN; HTML report, badge, GitHub Action</td><td><code>conformance</code></td><td class="yes">Complete; weekly against a peer</td></tr>
-      <tr><td>Developer tools — <code>openadr dev</code>, the inspector, <code>openadr trigger</code>, <code>openadr explain</code></td><td>the binary</td><td class="yes">Complete</td></tr>
-      <tr><td>Certification against the Alliance test tool</td><td>—</td><td class="no">Not attempted</td></tr>
-    </tbody>
-  </table>
-  <p class="note">
-    Property tests, a storage conformance suite all three backends run, and clippy, rustfmt and
-    rustdoc clean at <code>-D warnings</code>; every feature combination and both
-    <code>no_std</code> targets built in CI.
-  </p>
-  <p><a class="more" href="{{ get_url(path='@/docs/status.md') | safe }}">The full picture, including what is missing →</a></p>
-</section>
-
 <section class="wrap prose closing">
   <h2>Start here</h2>
   <ul class="next">
+    <li><a href="{{ get_url(path='@/docs/compatibility.md') | safe }}"><strong>Compatibility</strong></a> — Rust API, Cargo features, compiler support and CLI automation.</li>
+    <li><a href="{{ get_url(path='@/docs/status.md') | safe }}"><strong>Implementation status</strong></a> — tested capabilities and deployment limits.</li>
     <li><a href="{{ get_url(path='@/docs/getting-started.md') | safe }}"><strong>Getting started</strong></a> — <code>openadr dev</code>, the inspector and a VEN, in a minute; then a durable VTN.</li>
     <li><a href="{{ get_url(path='@/docs/what-is-openadr.md') | safe }}"><strong>What OpenADR is</strong></a> — the six objects, targets, intervals and reports, if the protocol is new to you.</li>
     <li><a href="{{ get_url(path='@/docs/object-privacy.md') | safe }}"><strong>Object privacy</strong></a> — how a VEN is granted visibility, and why it never sees the other groups. Worth reading before a pilot.</li>

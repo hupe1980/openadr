@@ -1310,3 +1310,44 @@ async fn a_vtn_with_no_broker_skips_the_mqtt_checks_rather_than_failing_them() {
             .contains("offers no MQTT notifier binding")
     );
 }
+
+#[test]
+fn cli_distinguishes_setup_errors_and_honors_the_last_ven_credential() {
+    let cases: &[(&[&str], &str)] = &[
+        (&[], "no VTN"),
+        (
+            &[
+                "--url",
+                "http://localhost",
+                "--ven-token",
+                "dummy",
+                "--ven-client",
+                "malformed",
+            ],
+            "--ven-client takes id:secret",
+        ),
+        (
+            &[
+                "--url",
+                "http://localhost",
+                "--ven-client",
+                "malformed",
+                "--ven-token",
+                "dummy",
+            ],
+            "also needs --ven-client-id",
+        ),
+    ];
+    for (args, diagnostic) in cases {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_openadr"))
+            .env_clear()
+            .arg("conformance")
+            .args(*args)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        let error = String::from_utf8(output.stderr).unwrap();
+        assert!(error.contains(diagnostic), "{args:?}: {error}");
+    }
+}

@@ -55,6 +55,9 @@ jobs:
           cargo test --locked -p aws-lc-consumer
           cargo test --locked -p openadr --no-default-features --features ven --test missing_provider
 
+      - name: Consumer-selected JSON number precision
+        run: cargo test --locked -p openadr --no-default-features --features serde_json/arbitrary_precision --test numeric_payloads
+
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features
 
@@ -83,6 +86,26 @@ jobs:
         run: cargo doc --no-deps --all-features
         env:
           RUSTDOCFLAGS: -D warnings
+
+  compatibility:
+    name: Public API and compiler floor
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the library and CLI on the declared minimum Rust version
+        run: |
+          msrv=$(cargo metadata --locked --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "openadr") | .rust_version')
+          if [[ "$msrv" =~ ^[0-9]+\.[0-9]+$ ]]; then msrv="$msrv.0"; fi
+          rustup toolchain install "$msrv" --profile minimal
+          cargo +"$msrv" check --locked -p openadr --lib --bins --all-features
+      - name: Verify the reviewed public API and feature inventory
+        run: python3 .github/compatibility/check.py --install-tools
+      - name: Test compatibility check failures
+        run: python3 -B -m unittest discover -s .github/compatibility
 
   no-std:
     name: no_std

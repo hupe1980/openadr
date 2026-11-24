@@ -46,7 +46,7 @@ WHAT IT DOES TO THE VTN:
 EXIT STATUS:
     0   no required check failed
     1   a required check failed, or (with --strict) any check did
-    2   the suite could not be run at all, or no required check could be attempted
+    2   setup or output failed, or no required check could be attempted
 
 EXAMPLES:
     openadr conformance --url http://localhost:3000/openadr3/3.1.0 \
@@ -106,7 +106,10 @@ pub fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
                 ven_token = Some(value()?);
                 ven_client = None;
             }
-            "--ven-client" => ven_client = Some(value()?),
+            "--ven-client" => {
+                ven_client = Some(value()?);
+                ven_token = None;
+            }
             "--ven-client-id" => ven_client_id = Some(value()?),
             "--json" => json = true,
             "--strict" => strict = true,

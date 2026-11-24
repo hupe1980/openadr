@@ -20,9 +20,15 @@ mod query;
 fn main() {
     // `main` returning `Result` prints the error with `Debug`, which escapes newlines and wraps
     // the message in quotes. An operator reading a refusal deserves better than that.
-    if let Err(error) = run() {
+    let args = split_inline_values(&std::env::args().skip(1).collect::<Vec<_>>());
+    if let Err(error) = run(&args) {
         eprintln!("error: {error}");
-        std::process::exit(1);
+        // Conformance reserves 1 for measured failures and 2 for errors running the suite.
+        let status = match args.first().map(String::as_str) {
+            Some("conformance") => 2,
+            _ => 1,
+        };
+        std::process::exit(status);
     }
 }
 
@@ -50,8 +56,7 @@ fn split_inline_values(args: &[String]) -> Vec<String> {
     out
 }
 
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let args: Vec<String> = split_inline_values(&std::env::args().skip(1).collect::<Vec<_>>());
+fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
     let command = args.first().map(String::as_str);
 
     // Only the server logs; the client commands write JSON to stdout and anything else to stderr,

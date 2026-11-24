@@ -1,7 +1,6 @@
 # Deploying a VTN and its broker
 
-Working configurations, and a compose file that runs the pair. They are here because they are the
-one piece an operator cannot derive from the documentation: *what the broker's side looks like*.
+Run a local VTN and EMQX broker with Docker Compose.
 
 ```console
 $ docker compose -f deploy/compose.yaml up --build

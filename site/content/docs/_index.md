@@ -19,6 +19,8 @@ you are running one where it matters,
 crate and need to know where it interprets an ambiguity, read
 **[Reading the specification](@/docs/spec-notes.md)**.
 
+For upgrade decisions, see the [compatibility contract](@/docs/compatibility.md).
+
 Item-by-item API documentation lives on [docs.rs](https://docs.rs/openadr); this site covers what an
 API listing cannot: why a piece is shaped the way it is, and which of several plausible readings of
 the specification it implements.

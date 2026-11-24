@@ -48,7 +48,7 @@ comment.
 that lets it fall fails the build.
 
 The unit is the section, so a section carrying three requirements is credited by a test covering one
-of them. Naming the sentence is the half still open.
+of them.
 
 ## What it does not do
 

@@ -3,7 +3,7 @@ members = ["xtask", "tests/aws-lc-consumer"]
 resolver = "3"
 
 [workspace.package]
-version = "0.6.0"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.96"
 license = "Apache-2.0 OR MIT"
@@ -33,8 +33,7 @@ default = ["std", "tls-ring"]
 tls-ring = ["rustls?/ring"]
 
 # --- foundation -------------------------------------------------------------
-# The crate is always `no_std` + `alloc`: the wire model is Strings and Vecs, so an allocator is not
-# optional. `std` is the only foundation switch, and turning it off is the microcontroller build.
+# The wire model needs an allocator on embedded targets.
 std = [
     "serde/std",
     "serde_json/std",
@@ -44,11 +43,9 @@ std = [
 ]
 # --- roles ------------------------------------------------------------------
 client = ["std", "dep:reqwest", "dep:rustls", "dep:tokio", "dep:url", "dep:tracing", "dep:futures-util"]
-# The VEN loop on top of the client: registration, conditional event sync, a maintained timeline,
-# and report scheduling. Polling, because that is what every surveyed deployment does.
+# Registration, event polling and report scheduling.
 ven = ["client", "dep:async-trait"]
-# The black-box conformance suite. Runs against any VTN over HTTP and imports nothing from `vtn`,
-# which is what makes a result about the *protocol* rather than about this implementation.
+# The conformance client tests VTNs over HTTP.
 conformance = ["client"]
 vtn = [
     "std",
@@ -70,21 +67,16 @@ vtn = [
 # --- vtn backends -----------------------------------------------------------
 # The VTN issues its own tokens: `POST /auth/token`, client secrets hashed with Argon2id.
 internal-auth = ["vtn", "dep:jsonwebtoken", "dep:argon2", "dep:rand"]
-# Durable storage. SQLite first: a site controller or a single-tenant pilot ships as one binary,
-# and that deployment has no competition.
+# Single-process storage.
 sqlite = ["vtn", "dep:sqlx", "sqlx/sqlite", "dep:ring"]
-# The cloud VTN. Postgres is where the outbox is actually good: `SELECT … FOR UPDATE SKIP LOCKED`
-# lets dispatchers scale, and `LISTEN`/`NOTIFY` wakes one the instant a write commits.
+# Multiple dispatchers share PostgreSQL outbox leases.
 postgres = ["vtn", "dep:sqlx", "sqlx/postgres", "sqlx/tls-rustls-ring", "dep:ring"]
 # The VTN validates tokens an external authorization server issued, against its JWKS.
 external-auth = ["vtn", "dep:jsonwebtoken", "dep:reqwest", "dep:rustls"]
-# The webhook signature scheme, on its own: `openadr::webhook`, `no_std`-capable, no HTTP stack.
-# Separate from `webhook` because the sender is a VTN and the receiver is not, and a subscriber
-# checking a signature should not have to compile an HTTP server to do it.
+# Standalone signature verification supports no_std subscribers.
 webhook-signature = ["dep:hmac", "dep:sha2"]
 webhook = ["vtn", "webhook-signature", "dep:reqwest", "dep:rustls", "dep:rand", "dep:url"]
-# MQTT, both ends, over this crate's own 3.1.1 client. Implies no role: with `vtn` it is the
-# publisher and the broker callbacks, with `ven` it is the push receiver.
+# MQTT 3.1.1 transport. Add vtn for publishing or ven for subscriptions.
 mqtt = [
     "std",
     "dep:tokio",
@@ -96,13 +88,9 @@ mqtt = [
     "dep:url",
     "dep:tracing",
 ]
-# Serving the VTN over TLS, and optionally refusing a connection whose client certificate a named
-# CA did not issue. Without it the "one binary" deployment needs a reverse proxy to be reachable
-# over anything but plaintext, which is the one thing a site controller has no room for.
+# HTTPS listener with optional client certificate verification.
 tls = ["vtn", "dep:rustls", "dep:tokio-rustls", "dep:hyper", "dep:hyper-util"]
-# mDNS/DNS-SD discovery of a local VTN `[Def §Discovery and Configuration of Local VTNs]`. Like
-# `mqtt` it implies no role: with `vtn` it advertises, with `ven` it browses, and the part that
-# decides what a record *says* is always on and needs no network to test.
+# Local discovery: vtn advertises and ven browses.
 mdns = ["std", "dep:mdns-sd", "dep:tracing"]
 
 [dependencies]
@@ -135,44 +123,29 @@ hmac = { version = "0.12.1", optional = true, default-features = false }
 sha2 = { version = "0.10.9", optional = true, default-features = false }
 base64 = { version = "0.22.1", optional = true }
 sqlx = { version = "0.9.0", optional = true, default-features = false, features = ["runtime-tokio"] }
-# Pure Rust, no async runtime of its own, and no C toolchain — which is the whole reason the VEN
-# side of this crate can be cross-compiled at all.
 mdns-sd = { version = "0.21.3", optional = true, default-features = false }
-# AES-256-GCM for encrypting stored subscriber credentials; only the SQL backends need it. Already
-# linked by `rustls` and `jsonwebtoken`, so naming it directly adds no code to the binary.
+# Encrypt stored subscriber credentials in the SQL backends.
 ring = { version = "0.17.14", optional = true }
 rustls = { version = "0.23.44", optional = true, default-features = false, features = ["std", "tls12"] }
-# Root certificates for the MQTT client's TLS. `reqwest` already carries this set for HTTPS; naming
-# it here is what lets `--features mqtt` build without `client`.
+# Root certificates for standalone MQTT over TLS.
 webpki-roots = { version = "1.0.9", optional = true }
-# The VTN's own TLS listener, and the MQTT client's transport. `axum::serve` cannot carry a peer
-# certificate into the request it precedes, so the accept loop is written out and these are what it
-# needs.
+# TLS transport for the VTN listener and MQTT connections.
 tokio-rustls = { version = "0.26.5", optional = true, default-features = false, features = ["tls12", "logging"] }
 hyper = { version = "1.11.1", optional = true, features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1.20", optional = true, features = ["server-auto", "tokio"] }
 
 [dev-dependencies]
 serde_json = { version = "1.0.149", features = ["std", "preserve_order"] }
-# The JWT tests sign real tokens with a real key. `jsonwebtoken` is built without `use_pem` here —
-# the VTN only ever *reads* JWKs — so the test decodes its own PEM to DER.
+# Tests decode PEM fixtures to DER because use_pem is disabled.
 base64 = "0.22.1"
 tokio = { version = "1.50.0", features = ["full"] }
 proptest = "1.11.0"
-# The reference implementation of the `duration` pattern, for the property test that holds the
-# hand-written state machine to it. A dev-dependency only: the crate is `no_std`, and a regex engine
-# in the wire model would be the largest thing in it.
+# Reference pattern for duration property tests.
 regex = "1.12.3"
 jiff = "0.2.35"
-# The TLS tests open a real socket and complete a real handshake, which needs real certificates —
-# a server one and a client one issued by a CA the listener is told about. Generating them here is
-# what makes "a peer the CA did not issue is refused" a property of the listener rather than of a
-# mock. Test-only: nothing in the crate ever writes a certificate.
+# Generate test certificates for TLS handshake tests.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
-# Postgres, a broker and somebody else's VTN, started by the test that needs them and torn down when
-# it ends. The alternative was shell scripts a developer had to know to run first, which meant the
-# checks that mattered most were the ones least often run. `docker-compose` is for the broker, whose
-# EMQX-plus-callback-endpoint arrangement is a topology rather than a container.
+# Integration tests start PostgreSQL, EMQX and a peer VTN on demand.
 testcontainers = { version = "0.27", features = ["docker-compose"] }
 testcontainers-modules = { version = "0.15", features = ["postgres"] }
 
@@ -187,8 +160,6 @@ required-features = ["ven"]
 [[bin]]
 name = "openadr"
 path = "src/bin/openadr/main.rs"
-# The VTN is what the binary is for; the client subcommands ride along behind `client` and say so
-# when they are not compiled in.
 required-features = ["vtn"]
 
 [package.metadata.docs.rs]

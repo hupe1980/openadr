@@ -48,7 +48,8 @@ run is "166 of 168 *applicable* cases", and the load-bearing word is the one in 
 reports what it could not attempt as success, or quietly drops it from the denominator, produces a
 figure nobody can act on — and the checks it drops are exactly the ones a peer has not implemented.
 
-`--strict` makes any failure non-zero. Without it, only a **required** failure does.
+A measured **required** failure exits 1. With `--strict`, any measured failure exits 1.
+Setup errors, output errors and a run with zero attempted required checks exit 2.
 
 ## Three severities
 
@@ -196,8 +197,9 @@ reported as *not measured* and exits `2`. A connection that fails is a skip, nev
 
 {% raw %}
 ```yaml
-- uses: hupe1980/openadr@v0.6.0
+- uses: hupe1980/openadr@v0.7.0
   with:
+    version: v0.7.0
     url: http://localhost:3000/openadr3/3.1.0
     bl-client: bl-1:${{ secrets.BL_SECRET }}
     ven-client: ven-1:${{ secrets.VEN_SECRET }}

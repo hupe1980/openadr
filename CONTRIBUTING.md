@@ -64,6 +64,23 @@ the output. Only the OpenAPI document is Apache-2.0; never commit the Definition
 `cargo xtask inputs` reports which other inputs — peer releases, profile validators, the Fluvius
 PDF — have moved since `inputs.lock` recorded them; CI runs it weekly and files an issue.
 
+## Reviewing a public interface change
+
+Run the same read-only check as release CI. The first command installs the pinned development tools
+and checks the inventory. Subsequent checks can use the second command.
+
+```sh
+python3 .github/compatibility/check.py --install-tools
+python3 .github/compatibility/check.py
+```
+
+A diff lists the affected signatures, features or compiler floor. For an intentional change, run
+`python3 .github/compatibility/check.py --update`, inspect the diff in
+`.github/compatibility/public-api.txt`, and describe the consumer impact in the changelog.
+CI uses Linux. The renderer omits blanket implementations and retains derived and auto-trait
+implementations. The inventory covers the all-features library. CLI behavior and other feature
+combinations have separate tests. [Compatibility policy](https://hupe1980.github.io/openadr/docs/compatibility/)
+
 ## Cutting a release
 
 Update the changelog, workspace version and lockfile. Commit the release, then push the matching

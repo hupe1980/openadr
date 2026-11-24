@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.7.0] — 2026-11-24
+
+- Fractional payloads and curve coordinates decode when another dependency enables
+  `serde_json/arbitrary_precision`. This includes values inside event responses.
+- **Breaking:** Payload points with duplicate coordinates are rejected.
+- **Breaking:** `openadr conformance` exits with status 2 on setup or output errors. Status 1
+  indicates a measured failure. For each role, the last explicit credential option wins.
+- Added a public compatibility policy and release checks for the Rust API, Cargo features and
+  minimum supported compiler.
+
 ## [0.6.0] — 2026-11-23
 
 - Weekly interop readings include HTML and JSON, the UTC measurement time and the peer image digest.
@@ -324,7 +334,12 @@ Initial implementation: the wire model, the payload schema, the domain core, the
 three storage backends, the typed client, the VEN runtime, webhook and MQTT transports, mDNS
 discovery, TLS, and the black-box conformance kit.
 
-[0.3.1]: https://github.com/hupe1980/openadr/compare/v0.3.0...main
+[0.7.0]: https://github.com/hupe1980/openadr/releases/tag/v0.7.0
+[0.6.0]: https://github.com/hupe1980/openadr/releases/tag/v0.6.0
+[0.5.1]: https://github.com/hupe1980/openadr/releases/tag/v0.5.1
+[0.5.0]: https://github.com/hupe1980/openadr/releases/tag/v0.5.0
+[0.4.0]: https://github.com/hupe1980/openadr/releases/tag/v0.4.0
+[0.3.1]: https://github.com/hupe1980/openadr/releases/tag/v0.3.1
 [0.3.0]: https://github.com/hupe1980/openadr/releases/tag/v0.3.0
 [0.2.0]: https://github.com/hupe1980/openadr/releases/tag/v0.2.0
 [0.1.0]: https://github.com/hupe1980/openadr/releases/tag/v0.1.0

@@ -23,8 +23,8 @@ $ source .openadr-dev.env
 `openadr vtn` with presets: loopback, two generated clients (`bl-1`, `ven-1`), a per-run token key,
 the inspector at `/_inspect`, and seeded data — a 24-hour price curve rolled forward every quarter
 hour, a capacity event two minutes out, and one for `feeder-7` the VEN cannot see. The credentials
-are printed and written to `.openadr-dev.env` (mode `0600`). Every `openadr vtn` flag still applies:
-`--database` makes it durable, `--env-file` moves the file. A non-loopback `--listen` needs
+are printed and written to `.openadr-dev.env` (mode `0600`). Use `--database` to make it durable and `--env-file` to move the file. Server configuration flags
+pass through to the VTN. The dev command supplies the clients and static tokens itself. A non-loopback `--listen` needs
 `--ephemeral`, because the credentials are on screen.
 
 ```console

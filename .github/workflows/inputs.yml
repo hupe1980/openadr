@@ -32,6 +32,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The Markdown command examples are literal.
+          # shellcheck disable=SC2016
           body="$(printf 'Inputs moved since they were last read (%s):\n\n%s\n\nRead each change, then `cargo xtask inputs --update` (and `cargo xtask spec-sync --update` for the mirror) and commit the result with what it means.' "$(date -u +%F)" "$(cat report.md)")"
           existing="$(gh issue list --label inputs --state open --json number --jq '.[0].number')"
           if [ -n "$existing" ]; then

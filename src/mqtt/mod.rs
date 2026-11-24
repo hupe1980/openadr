@@ -1,28 +1,9 @@
-//! Reaching a broker: the part the publisher and the subscriber share.
+//! Shared MQTT 3.1.1 transport for VTN publishers and VEN subscribers.
 //!
-//! The VTN publishes notifications and a VEN subscribes to them, and both have to turn one
-//! `mqtts://host:8883` out of a `notifierBinding` into a connection. Written twice, that is two
-//! places to disagree about a default port, a scheme name or which TLS provider is in use — and the
-//! disagreement shows up as a VEN that cannot connect to the broker its own VTN published to.
-//!
-//! So it is written once, here, and neither side parses a URL.
-//!
-//! **Versions.** `[Def §MQTT]`, `[Notifiers §11.2]` and `[Notifiers §22.9]` all say the same thing:
-//! 3.1.1 or later is required, 5.0 or later is recommended. This client speaks 3.1.1, which is the
-//! required one; 5.0 is the recommendation and is [ROADMAP B-14].
-//!
-//! **Transport.** `[Def §MQTT]` also says clients use MQTT over TLS to reach the VTN's broker. The
-//! scheme decides that here and a typo is refused by name rather than quietly defaulted to
-//! plaintext, which is the one failure mode an `mqtts`-vs-`mqtt` slip has.
-//!
-//! **The client is this crate's.** `codec` is the packet layer — no sockets, no runtime,
-//! exhaustively testable against the specification's byte layouts — and `conn` moves the bytes.
-//! Both are private: what a caller needs is [`Connection`](crate::mqtt::Connection),
-//! [`BrokerAddress`](crate::mqtt::BrokerAddress) and [`QoS`](crate::mqtt::QoS).
-//!
-//! Owning it answers two requirements no surveyed client offers: a publish that completes on its
-//! `PUBACK` rather than on a queue insert (D-057), and many publishes outstanding at once without a
-//! lock held across the broker round trip (D-133).
+//! [`BrokerAddress`] selects TCP or TLS from the broker URL. [`Connection`] supports
+//! concurrent QoS 1 publishes and completes each one when the broker sends its PUBACK.
+//! OpenADR requires MQTT 3.1.1 or later and recommends MQTT 5.0
+//! (`[Def §MQTT]`, `[Notifiers §11.2]`, `[Notifiers §22.9]`).
 
 mod codec;
 mod conn;

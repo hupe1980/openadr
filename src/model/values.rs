@@ -4,20 +4,19 @@
 //!
 //! Payload values are prices, fees, capacities and percentages. Adding them up in binary floating
 //! point produces the classic `0.1 + 0.2 != 0.3` artefacts, which in this domain means a settlement
-//! discrepancy. [`Value::Number`] therefore holds a [`rust_decimal::Decimal`] and all arithmetic in
-//! this crate is exact base-10 arithmetic.
+//! discrepancy. [`Value::Number`] therefore holds a [`rust_decimal::Decimal`] so payload calculations
+//! use base-10 arithmetic.
 //!
 //! On the wire a value stays a JSON number (never a string — that would break every other
-//! implementation). The JSON bridge is exact for up to 15 significant digits, which is far beyond
-//! anything the enumerations describe; [`Value::Number`] documents the boundary.
+//! implementation). The bridge uses binary64 for fractional numbers. [`Value::Number`] describes
+//! the precision and range of that conversion.
 
 use crate::std_shim::{String, ToString, Vec, format};
 use core::{fmt, str::FromStr};
 use rust_decimal::{Decimal, prelude::ToPrimitive};
 use serde::{
     Deserialize, Deserializer, Serialize, Serializer,
-    de::{self, MapAccess, Visitor},
-    ser::SerializeStruct,
+    de::{self, MapAccess, Visitor, value::MapAccessDeserializer},
 };
 
 use super::ids::IdentifierError;
@@ -57,14 +56,10 @@ pub enum Value {
     Integer(i64),
     /// A JSON number, held as an exact decimal.
     ///
-    /// Exact end to end for anything JSON itself represents exactly, which is every price, capacity
-    /// and percentage the enumerations describe. The bound is the format's, not the type's: a JSON
-    /// number crosses the wire as an IEEE-754 double, so **beyond about 15 significant digits a
-    /// round trip rounds**. Arithmetic on the parsed value is exact base-10 arithmetic — which is
-    /// the point, since that is where `0.1 + 0.2 != 0.3` would otherwise bite.
-    ///
-    /// Exchanging longer values would mean `serde_json/arbitrary_precision`, a global feature that
-    /// changes `serde_json::Value` for every crate in the dependency graph.
+    /// JSON carries decimal text. This crate exchanges fractional values through `f64`, with
+    /// about 15 significant digits of precision. [`Decimal`] also limits the scale to 28
+    /// fractional digits. Further digits can round during conversion. The same policy applies
+    /// when another dependency enables `serde_json/arbitrary_precision`.
     Number(Decimal),
     /// A JSON boolean.
     Boolean(bool),
@@ -181,12 +176,7 @@ impl Serialize for Value {
             Value::Number(d) => decimal_as_number::serialize(d, s),
             Value::Boolean(b) => s.serialize_bool(*b),
             Value::String(v) => s.serialize_str(v),
-            Value::Point(p) => {
-                let mut st = s.serialize_struct("point", 2)?;
-                st.serialize_field("x", &DecimalNumber(p.x))?;
-                st.serialize_field("y", &DecimalNumber(p.y))?;
-                st.end()
-            }
+            Value::Point(p) => p.serialize(s),
         }
     }
 }
@@ -224,22 +214,25 @@ impl<'de> Deserialize<'de> for Value {
             fn visit_string<E: de::Error>(self, v: String) -> Result<Value, E> {
                 Ok(Value::String(v))
             }
-            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Value, M::Error> {
-                let mut x: Option<Decimal> = None;
-                let mut y: Option<Decimal> = None;
-                while let Some(key) = map.next_key::<String>()? {
-                    match key.as_str() {
-                        "x" => x = Some(map.next_value::<DecimalNumber>()?.0),
-                        "y" => y = Some(map.next_value::<DecimalNumber>()?.0),
-                        // Unknown members are ignored, per the model-extension rule.
-                        _ => {
-                            let _ = map.next_value::<de::IgnoredAny>()?;
-                        }
-                    }
+            fn visit_map<M: MapAccess<'de>>(self, map: M) -> Result<Value, M::Error> {
+                // Arbitrary-precision JSON numbers also arrive through visit_map, including
+                // inside flattened events. Let serde_json recognize its own representation.
+                #[derive(Deserialize)]
+                #[serde(
+                    untagged,
+                    expecting = "a JSON number or a point with numeric `x` and `y` coordinates"
+                )]
+                enum NumberOrPoint {
+                    Number(serde_json::Number),
+                    Point(Point),
                 }
-                match (x, y) {
-                    (Some(x), Some(y)) => Ok(Value::Point(Point { x, y })),
-                    _ => Err(de::Error::custom("a point requires both `x` and `y`")),
+
+                match NumberOrPoint::deserialize(MapAccessDeserializer::new(map))? {
+                    NumberOrPoint::Point(p) => Ok(Value::Point(p)),
+                    NumberOrPoint::Number(n) => match n.as_i64() {
+                        Some(i) => Ok(Value::Integer(i)),
+                        None => decimal_from_json_fraction(&n).map(Value::Number),
+                    },
                 }
             }
         }
@@ -248,20 +241,15 @@ impl<'de> Deserialize<'de> for Value {
     }
 }
 
-/// A `Decimal` that serializes as a JSON number rather than a string.
-#[derive(Debug, Clone, Copy, PartialEq)]
-struct DecimalNumber(Decimal);
-
-impl Serialize for DecimalNumber {
-    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        decimal_as_number::serialize(&self.0, s)
+fn decimal_from_json_fraction<E: de::Error>(n: &serde_json::Number) -> Result<Decimal, E> {
+    // as_f64 alone also rounds oversized integer tokens into the decimal range.
+    if !n.is_f64() {
+        return Err(E::custom("number is outside the supported numeric range"));
     }
-}
-
-impl<'de> Deserialize<'de> for DecimalNumber {
-    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        decimal_as_number::deserialize(d).map(DecimalNumber)
-    }
+    let f = n
+        .as_f64()
+        .ok_or_else(|| E::custom("number is outside the decimal range"))?;
+    decimal_from_f64(f)
 }
 
 fn decimal_from_f64<E: de::Error>(v: f64) -> Result<Decimal, E> {
@@ -293,7 +281,7 @@ pub(crate) mod decimal_as_number {
 
     pub(crate) fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Decimal, D::Error> {
         struct V;
-        impl Visitor<'_> for V {
+        impl<'de> Visitor<'de> for V {
             type Value = Decimal;
             fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str("a JSON number")
@@ -306,6 +294,19 @@ pub(crate) mod decimal_as_number {
             }
             fn visit_f64<E: de::Error>(self, v: f64) -> Result<Decimal, E> {
                 decimal_from_f64(v)
+            }
+            fn visit_map<M: MapAccess<'de>>(self, mut map: M) -> Result<Decimal, M::Error> {
+                let n = serde_json::Number::deserialize(MapAccessDeserializer::new(&mut map))?;
+                if map.next_key::<de::IgnoredAny>()?.is_some() {
+                    return Err(de::Error::custom("expected a single JSON number"));
+                }
+                if let Some(i) = n.as_i64() {
+                    return self.visit_i64(i);
+                }
+                if let Some(u) = n.as_u64() {
+                    return self.visit_u64(u);
+                }
+                decimal_from_json_fraction(&n)
             }
             fn visit_str<E: de::Error>(self, v: &str) -> Result<Decimal, E> {
                 // Tolerated on input for interoperability with implementations that quote numbers.

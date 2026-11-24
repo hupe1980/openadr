@@ -224,8 +224,10 @@ jobs:
       - name: Stitch the per-architecture images into one tag
         working-directory: /tmp/digests
         run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+          args=()
+          while IFS= read -r tag; do args+=(-t "$tag"); done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          for digest in *; do args+=("ghcr.io/$GITHUB_REPOSITORY@sha256:$digest"); done
+          docker buildx imagetools create "${args[@]}"
 
       # The *manifest list's* digest, not any one architecture's, so `cosign verify` succeeds for
       # whichever image a puller resolves. `verify.outputs.version` rather than the tag name: the

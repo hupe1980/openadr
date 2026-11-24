@@ -39,12 +39,12 @@ The inspector shows the timeline against *now*, which events the VEN can and can
 the VTN with the VEN's own credential — and every delivery. Errors end with the `openadr explain`
 command that describes them. CI holds this quickstart to under 60 seconds.
 
-## Why this one
+## Features
 
 - **Object privacy holds on every path.** One `Access` value decides visibility for REST reads,
   webhook delivery and MQTT topic routing, inside the SQL query. On a broker the VTN answers the
   authorization callback, so one VEN cannot subscribe to another's topic.
-- **A dispatch instruction cannot be lost.** Notifications are written to an outbox in the same
+- **Durable notifications.** Notifications are written to an outbox in the same
   transaction as the object, delivered by a leased dispatcher, with dead letters you can query and
   retry, and a circuit breaker for subscribers that stop answering.
 - **Interoperability is measured.** `openadr conformance` runs 52 black-box checks against any VTN,
@@ -76,6 +76,9 @@ $ cargo add openadr --features conformance           # measure any VTN
 Features: `std` and `tls-ring` (default) · `client` · `ven` · `conformance` · `vtn` · `sqlite` · `postgres` ·
 `internal-auth` · `external-auth` · `webhook` · `webhook-signature` · `mqtt` · `mdns` · `tls`. CI
 builds each feature separately and tests the all-features configuration. See [Embedding and `no_std`](https://hupe1980.github.io/openadr/docs/embedding/).
+
+Fractional payloads such as a 7.56 kW import cap and curve points decode in the same workspace
+as crates that enable `serde_json/arbitrary_precision`. See [numeric precision](https://hupe1980.github.io/openadr/docs/spec-notes/#numeric-precision).
 
 Embedding a VEN in a service that uses AWS-LC? Disable the default features, enable `ven`,
 and install your rustls provider at startup. See [TLS provider selection](https://hupe1980.github.io/openadr/docs/client/#selecting-a-tls-provider).
@@ -129,12 +132,11 @@ See [the VEN runtime](https://hupe1980.github.io/openadr/docs/ven-runtime/) and
 
 ## Status
 
-Pre-1.0: breaking changes are named in [CHANGELOG.md](CHANGELOG.md). Working and tested against
-real servers — a real JWKS and Keycloak, a routing MQTT broker, PostgreSQL, TLS handshakes,
-multicast. Every `MUST` and `SHALL` in the specification's prose is named by a test or a
-conformance check (34 of 34, a ratchet CI enforces). Not done: certification against the Alliance
-test tool, MQTT 5, mapping a client certificate to a `clientID`.
-[The full picture](https://hupe1980.github.io/openadr/docs/status/).
+Pre-1.0 breaking changes are listed in [CHANGELOG.md](CHANGELOG.md). For the Rust API, Cargo
+features, compiler floor and scriptable CLI, see [Compatibility](https://hupe1980.github.io/openadr/docs/compatibility/).
+
+Integration tests exercise PostgreSQL, Keycloak, MQTT, TLS and mDNS. The traceability check covers
+all 34 specification sections with normative prose. See [implementation status and limits](https://hupe1980.github.io/openadr/docs/status/).
 
 ```console
 $ cargo test --all-features
