@@ -49,8 +49,6 @@ CI enforces that coverage. A section with several statements can be covered by a
 
 ## Deployment limits
 
-The project has not obtained Alliance certification.
-
 **Issue or renew certificates.** `--tls-cert`/`--tls-key` serve TLS 1.2+ directly and
 `--tls-client-ca` gates the connection, but there is no ACME, no rate limiting, and no mapping from a
 client certificate's subject to a `clientID` — the connection gate exists, the identity half is

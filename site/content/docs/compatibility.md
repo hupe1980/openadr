@@ -38,7 +38,7 @@ Cargo feature names, their public implications, default membership and the compi
 checked-in inventory. A diff names the changed interface. Contributors review intentional changes
 alongside the changelog. Separate CI jobs compile feature combinations and embedded targets and
 exercise the command line. Behavioral changes still need tests.
-[Reviewed API inventory](https://github.com/hupe1980/openadr/blob/main/.github/compatibility/public-api.txt)
+[Reviewed API inventory](https://raw.githubusercontent.com/hupe1980/openadr/main/.github/compatibility/public-api.txt)
 
 Durable deployments should also check the storage schema version before upgrading.
 [Storage](@/docs/storage.md)
