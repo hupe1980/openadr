@@ -1,6 +1,6 @@
 //! Shared MQTT 3.1.1 transport for VTN publishers and VEN subscribers.
 //!
-//! [`BrokerAddress`] selects TCP or TLS from the broker URL. [`Connection`] supports
+//! [`crate::mqtt::BrokerAddress`] selects TCP or TLS from the broker URL. [`crate::mqtt::Connection`] supports
 //! concurrent QoS 1 publishes and completes each one when the broker sends its PUBACK.
 //! OpenADR requires MQTT 3.1.1 or later and recommends MQTT 5.0
 //! (`[Def §MQTT]`, `[Notifiers §11.2]`, `[Notifiers §22.9]`).
