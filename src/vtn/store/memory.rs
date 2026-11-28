@@ -1054,7 +1054,7 @@ impl Storage for MemoryStorage {
         _owner: &str,
     ) -> Result<Vec<Queued>, StorageError> {
         let lease_until = now
-            .checked_add(jiff::Span::new().seconds(lease.as_secs() as i64))
+            .checked_add(core::time::Duration::from_secs(lease.as_secs()))
             .unwrap_or(now);
 
         let mut inner = self.write();
@@ -1201,11 +1201,7 @@ impl Storage for MemoryStorage {
             entry.cut_off_since = Some(now);
         }
         entry.retry_at = now
-            .checked_add(
-                jiff::Span::new()
-                    .try_seconds(policy.cooldown.as_secs().min(i64::MAX as u64) as i64)
-                    .unwrap_or_default(),
-            )
+            .checked_add(core::time::Duration::from_secs(policy.cooldown.as_secs()))
             .ok();
         Ok(opening)
     }

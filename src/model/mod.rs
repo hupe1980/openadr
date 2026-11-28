@@ -46,7 +46,9 @@ pub use objects::{
     VenResourceRequest, VenVenRequest,
 };
 pub use problem::Problem;
-pub use time::{Duration, SCHEMA_DURATION_PATTERN, StartTime, TimeError, Timestamp};
+pub use time::{
+    Duration, FiniteDuration, SCHEMA_DURATION_PATTERN, StartTime, TimeError, Timestamp,
+};
 pub use values::{PayloadType, Point, ReadingType, Unit, Value, ValuesMap};
 
 /// The page size the schema caps `limit` at `[API /programs limit]`.

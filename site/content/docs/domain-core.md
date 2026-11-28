@@ -41,9 +41,10 @@ refused, because no VEN could place it in time.
 
 **`P9999Y` is `Duration::Forever`**, and yields an interval with `end: None`.
 
-Both sentinels are enum variants rather than values. As a timestamp and a span they are one
-forgotten comparison away from a schedule that runs for nine thousand years; as variants the match
-arm has to exist, and the meaning stops depending on whether a date library can represent year 9999.
+Use `model::Timestamp` for absolute instants. Its Unix nanosecond accessors preserve precision
+when exchanging timestamps with other libraries. Add elapsed time with `Timestamp::checked_add`.
+For a calendar duration, `Duration::checked_add_to` resolves months and years in UTC. For example,
+one month from 31 January 2024 ends on 29 February.
 
 **A scalar payload carrying several values subdivides its interval.** Three prices in a `PT3H`
 interval are three hourly sub-intervals, each carrying one price. Whether a payload type is scalar
@@ -96,7 +97,7 @@ let timeline = Timeline::build(
     events.iter().map(|e| (&e.id, &e.content)),
     &IntervalExpander::at(now),
     now,
-    now + jiff::Span::new().hours(48),
+    now.checked_add(std::time::Duration::from_hours(48))?,
 );
 
 if let Some(segment) = timeline.at(now) {

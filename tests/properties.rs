@@ -21,7 +21,7 @@ fn epoch() -> Timestamp {
 }
 
 fn at(offset_secs: i64) -> Timestamp {
-    epoch() + jiff::Span::new().seconds(offset_secs)
+    epoch().checked_add_seconds(offset_secs).unwrap()
 }
 
 fn price(v: i64) -> ValuesMap {

@@ -24,7 +24,7 @@ A normal installation uses ring. To run a VEN with AWS-LC as its only rustls pro
 
 ```toml
 [dependencies]
-openadr = { version = "0.6", default-features = false, features = ["ven"] }
+openadr = { version = "0.8", default-features = false, features = ["ven"] }
 rustls = { version = "0.23", default-features = false, features = ["std", "aws_lc_rs"] }
 ```
 
@@ -229,7 +229,7 @@ loop {
             fresh.value.iter().map(|e| (&e.id, &e.content)),
             &IntervalExpander::at(now),
             now,
-            now + jiff::Span::new().hours(48),
+            now.checked_add(std::time::Duration::from_hours(48))?,
         );
         for (id, why) in timeline.skipped() {
             eprintln!("skipped event {id}: {why}");

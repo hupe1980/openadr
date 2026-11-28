@@ -838,8 +838,7 @@ impl<M: Meter> VenRuntime<M> {
             segment.interval_id,
             window,
         );
-        let shift = jiff::Span::new().seconds(offset);
-        if let Ok(start) = segment.start.checked_add(shift) {
+        if let Ok(start) = segment.start.checked_add_seconds(offset) {
             segment.start = start;
         }
         segment
@@ -860,10 +859,7 @@ impl<M: Meter> VenRuntime<M> {
         // window only has to cover downtime: a VEN that comes back after an outage still owes the
         // reports that fell due while it was away.
         let from = at
-            .checked_sub(
-                jiff::Span::new()
-                    .seconds(self.config.report_catchup.as_secs().min(i64::MAX as u64) as i64),
-            )
+            .checked_sub(StdDuration::from_secs(self.config.report_catchup.as_secs()))
             .unwrap_or(Timestamp::MIN);
 
         for event in inner.events.values() {
@@ -1023,17 +1019,17 @@ impl<M: Meter> VenRuntime<M> {
     }
 }
 
-/// How far ahead a timeline is built, in hours.
+/// How far ahead a timeline is built.
 ///
 /// Far enough to schedule against, not so far that a repeating event expands for ever.
-const TIMELINE_HORIZON_HOURS: i64 = 48;
+const TIMELINE_HORIZON: StdDuration = StdDuration::from_hours(48);
 
 /// How much of that horizon may elapse before the timelines are rebuilt, in seconds.
 ///
 /// Half of it, so a timeline always reaches at least a day ahead of the instant it is read at.
 /// The rebuild is arithmetic over the events already held — no request, no allocation per poll —
 /// so the only reason not to do it every cycle is that there is no reason to.
-const TIMELINE_REFRESH: i64 = TIMELINE_HORIZON_HOURS * 3600 / 2;
+const TIMELINE_REFRESH: i64 = TIMELINE_HORIZON.as_secs() as i64 / 2;
 
 /// One timeline per programme, over a window that reaches past the next poll.
 ///
@@ -1049,13 +1045,11 @@ fn build_timelines(
     now: Timestamp,
     poll_interval: StdDuration,
 ) -> BTreeMap<ObjectId, Timeline> {
-    let horizon = now
-        .checked_add(jiff::Span::new().hours(TIMELINE_HORIZON_HOURS))
-        .unwrap_or(Timestamp::MAX);
+    let horizon = now.checked_add(TIMELINE_HORIZON).unwrap_or(Timestamp::MAX);
     // Back to the start of the current interval, so an event already running is still in the
     // timeline rather than having been missed by a window that began after it did.
     let from = now
-        .checked_sub(jiff::Span::new().seconds(poll_interval.as_secs().max(1) as i64))
+        .checked_sub(StdDuration::from_secs(poll_interval.as_secs().max(1)))
         .unwrap_or(now);
 
     let mut by_program: BTreeMap<ObjectId, Vec<&Event>> = BTreeMap::new();

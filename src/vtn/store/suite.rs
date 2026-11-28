@@ -1765,7 +1765,9 @@ pub async fn an_expired_lease_releases_the_entry(s: &dyn Storage) {
     assert_eq!(claimed.len(), 1);
 
     // A dispatcher that dies mid-delivery costs one lease of delay, not the notification.
-    let after = now().checked_add(jiff::Span::new().hours(1)).unwrap();
+    let after = now()
+        .checked_add(core::time::Duration::from_hours(1))
+        .unwrap();
     let retaken = s.claim_due(after, 10, lease(), "d2").await.unwrap();
     assert_eq!(retaken.len(), 1);
     assert_eq!(retaken[0].id, claimed[0].id);
@@ -1778,7 +1780,9 @@ pub async fn completing_an_entry_removes_it(s: &dyn Storage) {
     s.complete(claimed[0].id).await.unwrap();
 
     assert!(s.outbox_stats(now()).await.unwrap().is_idle());
-    let after = now().checked_add(jiff::Span::new().hours(1)).unwrap();
+    let after = now()
+        .checked_add(core::time::Duration::from_hours(1))
+        .unwrap();
     assert!(
         s.claim_due(after, 10, lease(), "d1")
             .await
@@ -1846,7 +1850,9 @@ pub async fn a_retry_waits_for_its_backoff(s: &dyn Storage) {
             .is_empty(),
         "a failed entry was retried before its backoff elapsed"
     );
-    let later = now().checked_add(jiff::Span::new().seconds(61)).unwrap();
+    let later = now()
+        .checked_add(core::time::Duration::from_secs(61))
+        .unwrap();
     assert_eq!(
         s.claim_due(later, 10, lease(), "d1").await.unwrap().len(),
         1
@@ -1870,7 +1876,9 @@ pub async fn a_permanent_failure_is_abandoned_on_the_first_attempt(s: &dyn Stora
         .unwrap();
     assert!(abandoned, "a permanent failure must not be retried");
 
-    let later = now().checked_add(jiff::Span::new().hours(24)).unwrap();
+    let later = now()
+        .checked_add(core::time::Duration::from_hours(24))
+        .unwrap();
     assert!(
         s.claim_due(later, 10, lease(), "d1")
             .await
@@ -1907,7 +1915,9 @@ pub async fn the_stats_say_how_far_behind_the_queue_is(s: &dyn Storage) {
 
     let d = delivery(s, "tou").await;
     s.enqueue(vec![d], now()).await.unwrap();
-    let later = now().checked_add(jiff::Span::new().seconds(90)).unwrap();
+    let later = now()
+        .checked_add(core::time::Duration::from_secs(90))
+        .unwrap();
     let stats = s.outbox_stats(later).await.unwrap();
     assert_eq!(stats.pending, 1);
     assert_eq!(stats.dead, 0);
@@ -2044,7 +2054,9 @@ pub async fn the_breaker_counts_consecutive_abandonments(s: &dyn Storage) {
     assert_eq!(health[0].cut_off_since, Some(now()));
 
     // Past the cooldown the breaker is half-open: one probe is let through.
-    let later = now().checked_add(jiff::Span::new().seconds(601)).unwrap();
+    let later = now()
+        .checked_add(core::time::Duration::from_secs(601))
+        .unwrap();
     assert!(
         !health[0].is_cut_off(later),
         "the breaker never reopens, so nothing would ever probe it"
@@ -2125,7 +2137,7 @@ async fn three_aged_reports(s: &dyn Storage) -> (Vec<ObjectId>, Timestamp) {
     let mut at = now();
     for day in 0..3 {
         at = now()
-            .checked_add(jiff::Span::new().hours(day * 24))
+            .checked_add(core::time::Duration::from_hours(day * 24))
             .expect("inside the representable range");
         let r = s
             .create_report(
@@ -2149,7 +2161,7 @@ async fn three_aged_reports(s: &dyn Storage) -> (Vec<ObjectId>, Timestamp) {
 pub async fn retention_removes_the_oldest_reports_first(s: &dyn Storage) {
     let (ids, _) = three_aged_reports(s).await;
     let cutoff = now()
-        .checked_add(jiff::Span::new().hours(48))
+        .checked_add(core::time::Duration::from_hours(48))
         .expect("inside the representable range");
 
     // Two are older than the cutoff; take one.
@@ -2201,7 +2213,7 @@ pub async fn retention_touches_nothing_but_reports(s: &dyn Storage) {
     .unwrap();
 
     let far_future = now()
-        .checked_add(jiff::Span::new().hours(3650 * 24))
+        .checked_add(core::time::Duration::from_hours(3650 * 24))
         .expect("inside the representable range");
     assert_eq!(s.purge_reports(far_future, 100).await.unwrap(), 3);
 

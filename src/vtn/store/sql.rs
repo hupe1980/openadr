@@ -111,7 +111,7 @@ pub(crate) fn time(raw: &str) -> Result<Timestamp, StorageError> {
 /// variable-width rendering silently reorders pages and skews the `?active=` window. Nine digits,
 /// always.
 pub(crate) fn stamp(t: Timestamp) -> String {
-    t.strftime("%Y-%m-%dT%H:%M:%S.%9fZ").to_string()
+    t.0.strftime("%Y-%m-%dT%H:%M:%S.%9fZ").to_string()
 }
 
 /// When a cut-off subscriber's next probe is allowed, as a stored timestamp.
@@ -123,8 +123,7 @@ pub(crate) fn cooldown_end(
     now: Timestamp,
     policy: &super::BreakerPolicy,
 ) -> Option<crate::std_shim::String> {
-    let seconds = i64::try_from(policy.cooldown.as_secs()).unwrap_or(i64::MAX);
-    now.checked_add(jiff::Span::new().try_seconds(seconds).ok()?)
+    now.checked_add(core::time::Duration::from_secs(policy.cooldown.as_secs()))
         .ok()
         .map(stamp)
 }

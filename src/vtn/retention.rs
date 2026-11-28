@@ -105,10 +105,9 @@ impl Retention {
     /// cutoff that saturates to the epoch and deletes everything.
     fn cutoff(&self) -> Option<crate::model::Timestamp> {
         let keep = self.config.reports?;
-        let seconds = i64::try_from(keep.as_secs()).ok()?;
         self.clock
             .now()
-            .checked_sub(jiff::Span::new().try_seconds(seconds).ok()?)
+            .checked_sub(StdDuration::from_secs(keep.as_secs()))
             .ok()
     }
 
@@ -192,7 +191,7 @@ mod tests {
     }
 
     /// A store holding `count` reports, the *n*th filed `n` hours before `now()`.
-    async fn store_with_reports(count: i64) -> SharedStorage {
+    async fn store_with_reports(count: u64) -> SharedStorage {
         let storage = MemoryStorage::shared();
         let program = storage
             .create_program(
@@ -212,7 +211,7 @@ mod tests {
             .unwrap();
         for hour in 0..count {
             let at = now()
-                .checked_sub(jiff::Span::new().hours(hour))
+                .checked_sub(StdDuration::from_hours(hour))
                 .expect("inside the representable range");
             storage
                 .create_report(

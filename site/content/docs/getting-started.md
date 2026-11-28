@@ -175,7 +175,7 @@ let timeline = Timeline::build(
     events.iter().map(|e| (&e.id, &e.content)),
     &IntervalExpander::at(now),
     now,
-    now + jiff::Span::new().hours(24),
+    now.checked_add(std::time::Duration::from_hours(24))?,
 );
 
 if let Some(segment) = timeline.at(now) {

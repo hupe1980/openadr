@@ -286,8 +286,8 @@ pub(crate) mod support {
             return None;
         }
         let delay = policy.delay_after(attempts.saturating_sub(1));
-        let seconds = i64::try_from(delay.as_secs()).unwrap_or(i64::MAX);
-        now.checked_add(jiff::Span::new().seconds(seconds)).ok()
+        now.checked_add(core::time::Duration::from_secs(delay.as_secs()))
+            .ok()
     }
 
     /// Age in seconds of the oldest entry, for [`OutboxStats`].

@@ -197,9 +197,9 @@ reported as *not measured* and exits `2`. A connection that fails is a skip, nev
 
 {% raw %}
 ```yaml
-- uses: hupe1980/openadr@v0.7.0
+- uses: hupe1980/openadr@v0.8.0
   with:
-    version: v0.7.0
+    version: v0.8.0
     url: http://localhost:3000/openadr3/3.1.0
     bl-client: bl-1:${{ secrets.BL_SECRET }}
     ven-client: ven-1:${{ secrets.VEN_SECRET }}

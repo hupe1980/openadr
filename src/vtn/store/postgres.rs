@@ -59,7 +59,7 @@ const OUTBOX_CHANNEL: &str = "openadr_outbox";
 ///
 /// Timestamps are `TEXT COLLATE "C"`, not `TIMESTAMPTZ`. `TIMESTAMPTZ` would mean converting
 /// through `chrono` or `time` on every read and write, for a value this crate already has as a
-/// `jiff::Timestamp`; the text form is written fixed-width by [`stamp`] so it orders correctly, and
+/// `Timestamp`; the text form is written fixed-width by [`stamp`] so it orders correctly, and
 /// the `C` collation makes that byte-wise regardless of what the database's default collation does
 /// with punctuation.
 const SCHEMA: &str = r#"
@@ -2353,7 +2353,7 @@ impl Storage for PostgresStorage {
         owner: &str,
     ) -> Result<Vec<Queued>, StorageError> {
         let lease_until = now
-            .checked_add(jiff::Span::new().seconds(lease.as_secs() as i64))
+            .checked_add(core::time::Duration::from_secs(lease.as_secs()))
             .unwrap_or(now);
 
         // `FOR UPDATE SKIP LOCKED` is the whole reason this backend exists for a busy VTN: N

@@ -118,11 +118,9 @@ contradict it.
 from `venID` and from the token regardless. A `VEN_RESOURCE_REQUEST` naming a *different* VEN is
 refused rather than silently redirected.
 
-The `resource` **response** is the one place we side with 3.1.1 outright: it does not carry
-`clientID`. 3.1.0 composes the response from `BL_RESOURCE_REQUEST`, so a strict 3.1.0 reader expects
-the field; carrying it would mean a denormalised column and a join on every read, for a field the
-next release deletes and which `venID` already answers. `cargo xtask check-model` knows about this
-one departure by name and would fail on any other.
+Resource responses follow 3.1.1 and omit `clientID`. A strict 3.1.0 reader expects the field
+because 3.1.0 derives its response from `BL_RESOURCE_REQUEST`. Use `venID` to identify the
+owning VEN.
 
 ### Versioning does not follow the semantic versioning it claims
 

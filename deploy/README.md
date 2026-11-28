@@ -74,29 +74,15 @@ shared broker still cannot reach another deployment's topics.
 If your broker authenticates the VTN some other way — its own user database, or mutual TLS — leave
 that flag off and the blanket refusal stands.
 
-## What running it proves
-
-Four things hold against EMQX 5.8 with the configuration in this directory:
-
-- an event targeted at `group1` is published by the VTN and arrives on the entitled VEN's **private
-  topic**, carrying only that VEN's own target;
-- a VEN asking to subscribe to **another VEN's** private topic is refused by the broker;
-- a VEN's **publish** to any topic reaches no subscriber, so a forged notification cannot be planted;
-- a wrong password is refused at connect — by the VTN's own authenticator, through the broker.
+## Test broker authorization
 
 ```console
 $ cargo test --all-features --test broker -- --ignored --nocapture
 ```
 
-`tests/broker.rs` asserts those four and CI runs it, bringing this compose file up itself so what is
-under test is the configuration as shipped. Nothing is read from a log, and the cross-VEN claim is a
-**refusal** rather than silence — silence is also what a fan-out that published nothing looks like.
-The run starts only once a credential the VTN knows is accepted *and* one it does not is refused,
-because before that the broker's answers are not yet the VTN's.
-
-`deploy/emqx.conf` sets `authorization.no_match = deny`. That is load-bearing: EMQX's default is
-`allow`, and a VTN whose ACL endpoint is briefly unreachable would otherwise hand every VEN every
-topic — object privacy on the push path, undone by a timeout.
+The test checks private delivery, cross-VEN subscription denial, publish denial and rejection of
+invalid credentials. Keep `authorization.no_match = deny` in `emqx.conf` so unmatched requests
+are denied even when the VTN is unreachable.
 
 ## Not a production template
 

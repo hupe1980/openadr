@@ -70,7 +70,7 @@
   <div class="cards">
     <article class="card">
       <h3>Decimal payloads</h3>
-      <p>Represent prices, site import caps and curve coordinates as decimals, including a 7.56 kW cap when a dependency enables <code>serde_json/arbitrary_precision</code>.</p>
+      <p>Use decimal values for prices, import caps and curve coordinates.</p>
       <a href="{{ get_url(path='@/docs/spec-notes.md') | safe }}#numeric-precision">Numeric precision →</a>
     </article>
     <article class="card">
@@ -109,16 +109,8 @@ $ openadr conformance --report report.html
 ```
   {% endfilter %}
   <p>
-    A VTN with a business-logic and a VEN client, data that moves, and the inspector — a page that
-    shows the timeline, which events the VEN can and cannot see, and every delivery. Every error a
-    command prints ends with <code>openadr explain</code> and the name to look up. CI holds this to
-    under 60 seconds from start to a VEN reading a price.
-  </p>
-  <p>
-    For a real deployment, <code>openadr vtn --database ./openadr.sqlite --client-hashed …</code> is
-    every endpoint, an OAuth2 grant with Argon2id-hashed secrets, object privacy, durable storage and
-    a notification queue in one binary; a <code>postgres://</code> URL makes it the multi-instance
-    one.
+    Open the inspector to see the event timeline, the events visible to each VEN, and notification deliveries.
+    For persistent storage, run <code>openadr vtn</code> with SQLite or PostgreSQL.
   </p>
   <p><a class="more" href="{{ get_url(path='@/docs/getting-started.md') | safe }}">Walk through it →</a></p>
 </section>
@@ -141,11 +133,8 @@ loop {
 ```
   {% endfilter %}
   <p>
-    Registration, resource reconciliation, one conflict-resolved timeline per programme,
-    <code>randomizeStart</code> applied from a seed, a clock-skew guard, and report scheduling that
-    survives a restart — across a looping tariff, against intervals the event never lists, summing
-    an aggregate report and describing its units. What the load does and what the meter reads are
-    yours; the rest is not your problem.
+    The runtime resolves overlapping events by priority and schedules reports. Your application
+    supplies the meter readings and decides how the load responds.
   </p>
   <p><a class="more" href="{{ get_url(path='@/docs/ven-runtime.md') | safe }}">The VEN runtime →</a></p>
 </section>

@@ -708,7 +708,7 @@ fn parse_http_date(value: &str) -> Option<crate::model::Timestamp> {
     let candidate = rfc2822.as_deref().unwrap_or(trimmed);
     jiff::fmt::rfc2822::parse(candidate)
         .ok()
-        .map(|zoned| zoned.timestamp())
+        .map(|zoned| crate::model::Timestamp(zoned.timestamp()))
 }
 
 /// One HTTP response, uninterpreted. See [`Client::exchange`].

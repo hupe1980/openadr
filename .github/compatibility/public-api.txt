@@ -3199,7 +3199,7 @@ pub fn openadr::model::problem::problem_type(&str) -> core::option::Option<&'sta
 pub fn openadr::model::problem::slug_of(&str) -> core::option::Option<&'static openadr::model::problem::ProblemType>
 pub mod openadr::model::time
 pub enum openadr::model::time::Duration
-pub openadr::model::time::Duration::Finite(jiff::span::Span)
+pub openadr::model::time::Duration::Finite(openadr::model::time::FiniteDuration)
 pub openadr::model::time::Duration::Forever
 impl openadr::model::time::Duration
 pub fn openadr::model::time::Duration::as_nanos(&self) -> core::option::Option<i128>
@@ -3210,19 +3210,25 @@ pub fn openadr::model::time::Duration::from_secs(i64) -> core::result::Result<Se
 pub fn openadr::model::time::Duration::is_forever(&self) -> bool
 pub fn openadr::model::time::Duration::is_negative(&self) -> bool
 pub fn openadr::model::time::Duration::is_zero(&self) -> bool
-pub fn openadr::model::time::Duration::span(&self) -> core::option::Option<&jiff::span::Span>
+pub fn openadr::model::time::Duration::span(&self) -> core::option::Option<&openadr::model::time::FiniteDuration>
 pub fn openadr::model::time::Duration::zero() -> Self
 impl core::clone::Clone for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::clone(&self) -> Self
 impl core::cmp::Eq for openadr::model::time::Duration
 impl core::cmp::PartialEq for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::eq(&self, &Self) -> bool
+impl core::convert::From<openadr::model::time::FiniteDuration> for openadr::model::time::Duration
+pub fn openadr::model::time::Duration::from(openadr::model::time::FiniteDuration) -> Self
+impl core::convert::TryFrom<openadr::model::time::Duration> for openadr::model::time::FiniteDuration
+pub type openadr::model::time::FiniteDuration::Error = openadr::model::time::TimeError
+pub fn openadr::model::time::FiniteDuration::try_from(openadr::model::time::Duration) -> core::result::Result<Self, Self::Error>
 impl core::default::Default for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::default() -> Self
 impl core::fmt::Debug for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openadr::model::time::Duration
 impl core::str::traits::FromStr for openadr::model::time::Duration
 pub type openadr::model::time::Duration::Err = openadr::model::time::TimeError
 pub fn openadr::model::time::Duration::from_str(&str) -> core::result::Result<Self, Self::Err>
@@ -3255,7 +3261,7 @@ impl core::cmp::PartialEq for openadr::model::time::StartTime
 pub fn openadr::model::time::StartTime::eq(&self, &Self) -> bool
 impl core::cmp::PartialOrd for openadr::model::time::StartTime
 pub fn openadr::model::time::StartTime::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
-impl core::convert::From<jiff::timestamp::Timestamp> for openadr::model::time::StartTime
+impl core::convert::From<openadr::model::time::Timestamp> for openadr::model::time::StartTime
 pub fn openadr::model::time::StartTime::from(openadr::model::time::Timestamp) -> Self
 impl core::fmt::Debug for openadr::model::time::StartTime
 pub fn openadr::model::time::StartTime::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -3283,6 +3289,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for openadr::model::time::StartTime
 impl core::panic::unwind_safe::UnwindSafe for openadr::model::time::StartTime
 pub enum openadr::model::time::TimeError
 pub openadr::model::time::TimeError::Duration(alloc::string::String)
+pub openadr::model::time::TimeError::ExpectedFinite
 pub openadr::model::time::TimeError::OutOfRange(alloc::string::String)
 pub openadr::model::time::TimeError::Timestamp(alloc::string::String)
 impl core::clone::Clone for openadr::model::time::TimeError
@@ -3305,8 +3312,90 @@ impl core::marker::Unpin for openadr::model::time::TimeError
 impl core::marker::UnsafeUnpin for openadr::model::time::TimeError
 impl core::panic::unwind_safe::RefUnwindSafe for openadr::model::time::TimeError
 impl core::panic::unwind_safe::UnwindSafe for openadr::model::time::TimeError
+pub struct openadr::model::time::FiniteDuration(_)
+impl openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::as_nanos(&self) -> core::option::Option<i128>
+pub fn openadr::model::time::FiniteDuration::checked_add_to(&self, openadr::model::time::Timestamp) -> core::result::Result<openadr::model::time::Timestamp, openadr::model::time::TimeError>
+impl core::clone::Clone for openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::clone(&self) -> Self
+impl core::cmp::Eq for openadr::model::time::FiniteDuration
+impl core::cmp::PartialEq for openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::eq(&self, &Self) -> bool
+impl core::convert::From<openadr::model::time::FiniteDuration> for openadr::model::time::Duration
+pub fn openadr::model::time::Duration::from(openadr::model::time::FiniteDuration) -> Self
+impl core::convert::TryFrom<openadr::model::time::Duration> for openadr::model::time::FiniteDuration
+pub type openadr::model::time::FiniteDuration::Error = openadr::model::time::TimeError
+pub fn openadr::model::time::FiniteDuration::try_from(openadr::model::time::Duration) -> core::result::Result<Self, Self::Error>
+impl core::fmt::Debug for openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for openadr::model::time::FiniteDuration
+impl core::str::traits::FromStr for openadr::model::time::FiniteDuration
+pub type openadr::model::time::FiniteDuration::Err = openadr::model::time::TimeError
+pub fn openadr::model::time::FiniteDuration::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl serde_core::ser::Serialize for openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for openadr::model::time::FiniteDuration
+impl core::marker::Freeze for openadr::model::time::FiniteDuration
+impl core::marker::Move for openadr::model::time::FiniteDuration
+impl core::marker::Send for openadr::model::time::FiniteDuration
+impl core::marker::Sync for openadr::model::time::FiniteDuration
+impl core::marker::Unpin for openadr::model::time::FiniteDuration
+impl core::marker::UnsafeUnpin for openadr::model::time::FiniteDuration
+impl core::panic::unwind_safe::RefUnwindSafe for openadr::model::time::FiniteDuration
+impl core::panic::unwind_safe::UnwindSafe for openadr::model::time::FiniteDuration
+pub struct openadr::model::time::Timestamp(_)
+impl openadr::model::time::Timestamp
+pub const openadr::model::time::Timestamp::MAX: Self
+pub const openadr::model::time::Timestamp::MIN: Self
+pub const openadr::model::time::Timestamp::UNIX_EPOCH: Self
+pub fn openadr::model::time::Timestamp::as_nanosecond(self) -> i128
+pub fn openadr::model::time::Timestamp::as_second(self) -> i64
+pub fn openadr::model::time::Timestamp::checked_add(self, core::time::Duration) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::checked_add_seconds(self, i64) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::checked_sub(self, core::time::Duration) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::from_nanosecond(i128) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::from_second(i64) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::now() -> Self
+impl core::clone::Clone for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::clone(&self) -> Self
+impl core::cmp::Eq for openadr::model::time::Timestamp
+impl core::cmp::Ord for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<openadr::model::time::Timestamp> for openadr::model::time::StartTime
+pub fn openadr::model::time::StartTime::from(openadr::model::time::Timestamp) -> Self
+impl core::fmt::Debug for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openadr::model::time::Timestamp
+impl core::marker::StructuralPartialEq for openadr::model::time::Timestamp
+impl core::str::traits::FromStr for openadr::model::time::Timestamp
+pub type openadr::model::time::Timestamp::Err = openadr::model::time::TimeError
+pub fn openadr::model::time::Timestamp::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl serde_core::ser::Serialize for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for openadr::model::time::Timestamp
+impl core::marker::Freeze for openadr::model::time::Timestamp
+impl core::marker::Move for openadr::model::time::Timestamp
+impl core::marker::Send for openadr::model::time::Timestamp
+impl core::marker::Sync for openadr::model::time::Timestamp
+impl core::marker::Unpin for openadr::model::time::Timestamp
+impl core::marker::UnsafeUnpin for openadr::model::time::Timestamp
+impl core::panic::unwind_safe::RefUnwindSafe for openadr::model::time::Timestamp
+impl core::panic::unwind_safe::UnwindSafe for openadr::model::time::Timestamp
 pub const openadr::model::time::SCHEMA_DURATION_PATTERN: &str
-pub type openadr::model::time::Timestamp = jiff::timestamp::Timestamp
 pub mod openadr::model::values
 pub enum openadr::model::values::ReadingType
 pub openadr::model::values::ReadingType::Average
@@ -3545,7 +3634,7 @@ impl core::marker::UnsafeUnpin for openadr::model::values::ValuesMap
 impl core::panic::unwind_safe::RefUnwindSafe for openadr::model::values::ValuesMap
 impl core::panic::unwind_safe::UnwindSafe for openadr::model::values::ValuesMap
 pub enum openadr::model::Duration
-pub openadr::model::Duration::Finite(jiff::span::Span)
+pub openadr::model::Duration::Finite(openadr::model::time::FiniteDuration)
 pub openadr::model::Duration::Forever
 impl openadr::model::time::Duration
 pub fn openadr::model::time::Duration::as_nanos(&self) -> core::option::Option<i128>
@@ -3556,19 +3645,25 @@ pub fn openadr::model::time::Duration::from_secs(i64) -> core::result::Result<Se
 pub fn openadr::model::time::Duration::is_forever(&self) -> bool
 pub fn openadr::model::time::Duration::is_negative(&self) -> bool
 pub fn openadr::model::time::Duration::is_zero(&self) -> bool
-pub fn openadr::model::time::Duration::span(&self) -> core::option::Option<&jiff::span::Span>
+pub fn openadr::model::time::Duration::span(&self) -> core::option::Option<&openadr::model::time::FiniteDuration>
 pub fn openadr::model::time::Duration::zero() -> Self
 impl core::clone::Clone for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::clone(&self) -> Self
 impl core::cmp::Eq for openadr::model::time::Duration
 impl core::cmp::PartialEq for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::eq(&self, &Self) -> bool
+impl core::convert::From<openadr::model::time::FiniteDuration> for openadr::model::time::Duration
+pub fn openadr::model::time::Duration::from(openadr::model::time::FiniteDuration) -> Self
+impl core::convert::TryFrom<openadr::model::time::Duration> for openadr::model::time::FiniteDuration
+pub type openadr::model::time::FiniteDuration::Error = openadr::model::time::TimeError
+pub fn openadr::model::time::FiniteDuration::try_from(openadr::model::time::Duration) -> core::result::Result<Self, Self::Error>
 impl core::default::Default for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::default() -> Self
 impl core::fmt::Debug for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openadr::model::time::Duration
 impl core::str::traits::FromStr for openadr::model::time::Duration
 pub type openadr::model::time::Duration::Err = openadr::model::time::TimeError
 pub fn openadr::model::time::Duration::from_str(&str) -> core::result::Result<Self, Self::Err>
@@ -3925,7 +4020,7 @@ impl core::cmp::PartialEq for openadr::model::time::StartTime
 pub fn openadr::model::time::StartTime::eq(&self, &Self) -> bool
 impl core::cmp::PartialOrd for openadr::model::time::StartTime
 pub fn openadr::model::time::StartTime::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
-impl core::convert::From<jiff::timestamp::Timestamp> for openadr::model::time::StartTime
+impl core::convert::From<openadr::model::time::Timestamp> for openadr::model::time::StartTime
 pub fn openadr::model::time::StartTime::from(openadr::model::time::Timestamp) -> Self
 impl core::fmt::Debug for openadr::model::time::StartTime
 pub fn openadr::model::time::StartTime::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -3953,6 +4048,7 @@ impl core::panic::unwind_safe::RefUnwindSafe for openadr::model::time::StartTime
 impl core::panic::unwind_safe::UnwindSafe for openadr::model::time::StartTime
 pub enum openadr::model::TimeError
 pub openadr::model::TimeError::Duration(alloc::string::String)
+pub openadr::model::TimeError::ExpectedFinite
 pub openadr::model::TimeError::OutOfRange(alloc::string::String)
 pub openadr::model::TimeError::Timestamp(alloc::string::String)
 impl core::clone::Clone for openadr::model::time::TimeError
@@ -4403,6 +4499,41 @@ impl core::marker::Unpin for openadr::model::objects::EventRequest
 impl core::marker::UnsafeUnpin for openadr::model::objects::EventRequest
 impl core::panic::unwind_safe::RefUnwindSafe for openadr::model::objects::EventRequest
 impl core::panic::unwind_safe::UnwindSafe for openadr::model::objects::EventRequest
+pub struct openadr::model::FiniteDuration(_)
+impl openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::as_nanos(&self) -> core::option::Option<i128>
+pub fn openadr::model::time::FiniteDuration::checked_add_to(&self, openadr::model::time::Timestamp) -> core::result::Result<openadr::model::time::Timestamp, openadr::model::time::TimeError>
+impl core::clone::Clone for openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::clone(&self) -> Self
+impl core::cmp::Eq for openadr::model::time::FiniteDuration
+impl core::cmp::PartialEq for openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::eq(&self, &Self) -> bool
+impl core::convert::From<openadr::model::time::FiniteDuration> for openadr::model::time::Duration
+pub fn openadr::model::time::Duration::from(openadr::model::time::FiniteDuration) -> Self
+impl core::convert::TryFrom<openadr::model::time::Duration> for openadr::model::time::FiniteDuration
+pub type openadr::model::time::FiniteDuration::Error = openadr::model::time::TimeError
+pub fn openadr::model::time::FiniteDuration::try_from(openadr::model::time::Duration) -> core::result::Result<Self, Self::Error>
+impl core::fmt::Debug for openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::Copy for openadr::model::time::FiniteDuration
+impl core::str::traits::FromStr for openadr::model::time::FiniteDuration
+pub type openadr::model::time::FiniteDuration::Err = openadr::model::time::TimeError
+pub fn openadr::model::time::FiniteDuration::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl serde_core::ser::Serialize for openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openadr::model::time::FiniteDuration
+pub fn openadr::model::time::FiniteDuration::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for openadr::model::time::FiniteDuration
+impl core::marker::Freeze for openadr::model::time::FiniteDuration
+impl core::marker::Move for openadr::model::time::FiniteDuration
+impl core::marker::Send for openadr::model::time::FiniteDuration
+impl core::marker::Sync for openadr::model::time::FiniteDuration
+impl core::marker::Unpin for openadr::model::time::FiniteDuration
+impl core::marker::UnsafeUnpin for openadr::model::time::FiniteDuration
+impl core::panic::unwind_safe::RefUnwindSafe for openadr::model::time::FiniteDuration
+impl core::panic::unwind_safe::UnwindSafe for openadr::model::time::FiniteDuration
 pub struct openadr::model::Interval
 pub openadr::model::Interval::id: i32
 pub openadr::model::Interval::interval_period: core::option::Option<openadr::model::objects::IntervalPeriod>
@@ -5269,6 +5400,54 @@ impl core::marker::Unpin for openadr::model::ids::Target
 impl core::marker::UnsafeUnpin for openadr::model::ids::Target
 impl core::panic::unwind_safe::RefUnwindSafe for openadr::model::ids::Target
 impl core::panic::unwind_safe::UnwindSafe for openadr::model::ids::Target
+pub struct openadr::model::Timestamp(_)
+impl openadr::model::time::Timestamp
+pub const openadr::model::time::Timestamp::MAX: Self
+pub const openadr::model::time::Timestamp::MIN: Self
+pub const openadr::model::time::Timestamp::UNIX_EPOCH: Self
+pub fn openadr::model::time::Timestamp::as_nanosecond(self) -> i128
+pub fn openadr::model::time::Timestamp::as_second(self) -> i64
+pub fn openadr::model::time::Timestamp::checked_add(self, core::time::Duration) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::checked_add_seconds(self, i64) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::checked_sub(self, core::time::Duration) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::from_nanosecond(i128) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::from_second(i64) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::now() -> Self
+impl core::clone::Clone for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::clone(&self) -> Self
+impl core::cmp::Eq for openadr::model::time::Timestamp
+impl core::cmp::Ord for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<openadr::model::time::Timestamp> for openadr::model::time::StartTime
+pub fn openadr::model::time::StartTime::from(openadr::model::time::Timestamp) -> Self
+impl core::fmt::Debug for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openadr::model::time::Timestamp
+impl core::marker::StructuralPartialEq for openadr::model::time::Timestamp
+impl core::str::traits::FromStr for openadr::model::time::Timestamp
+pub type openadr::model::time::Timestamp::Err = openadr::model::time::TimeError
+pub fn openadr::model::time::Timestamp::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl serde_core::ser::Serialize for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for openadr::model::time::Timestamp
+impl core::marker::Freeze for openadr::model::time::Timestamp
+impl core::marker::Move for openadr::model::time::Timestamp
+impl core::marker::Send for openadr::model::time::Timestamp
+impl core::marker::Sync for openadr::model::time::Timestamp
+impl core::marker::Unpin for openadr::model::time::Timestamp
+impl core::marker::UnsafeUnpin for openadr::model::time::Timestamp
+impl core::panic::unwind_safe::RefUnwindSafe for openadr::model::time::Timestamp
+impl core::panic::unwind_safe::UnwindSafe for openadr::model::time::Timestamp
 pub struct openadr::model::TopicsResponse
 pub openadr::model::TopicsResponse::topics: openadr::model::notifier::NotifierTopics
 impl openadr::model::notifier::TopicsResponse
@@ -5468,7 +5647,6 @@ impl core::panic::unwind_safe::RefUnwindSafe for openadr::model::objects::VenVen
 impl core::panic::unwind_safe::UnwindSafe for openadr::model::objects::VenVenRequest
 pub const openadr::model::MAX_PAGE_LIMIT: usize
 pub const openadr::model::SCHEMA_DURATION_PATTERN: &str
-pub type openadr::model::Timestamp = jiff::timestamp::Timestamp
 pub mod openadr::mqtt
 pub enum openadr::mqtt::CodecError
 pub openadr::mqtt::CodecError::Malformed(alloc::string::String)
@@ -5669,7 +5847,7 @@ impl core::panic::unwind_safe::UnwindSafe for openadr::mqtt::ConnectionConfig
 pub const openadr::mqtt::MAX_PACKET: usize
 pub mod openadr::prelude
 pub enum openadr::prelude::Duration
-pub openadr::prelude::Duration::Finite(jiff::span::Span)
+pub openadr::prelude::Duration::Finite(openadr::model::time::FiniteDuration)
 pub openadr::prelude::Duration::Forever
 impl openadr::model::time::Duration
 pub fn openadr::model::time::Duration::as_nanos(&self) -> core::option::Option<i128>
@@ -5680,19 +5858,25 @@ pub fn openadr::model::time::Duration::from_secs(i64) -> core::result::Result<Se
 pub fn openadr::model::time::Duration::is_forever(&self) -> bool
 pub fn openadr::model::time::Duration::is_negative(&self) -> bool
 pub fn openadr::model::time::Duration::is_zero(&self) -> bool
-pub fn openadr::model::time::Duration::span(&self) -> core::option::Option<&jiff::span::Span>
+pub fn openadr::model::time::Duration::span(&self) -> core::option::Option<&openadr::model::time::FiniteDuration>
 pub fn openadr::model::time::Duration::zero() -> Self
 impl core::clone::Clone for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::clone(&self) -> Self
 impl core::cmp::Eq for openadr::model::time::Duration
 impl core::cmp::PartialEq for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::eq(&self, &Self) -> bool
+impl core::convert::From<openadr::model::time::FiniteDuration> for openadr::model::time::Duration
+pub fn openadr::model::time::Duration::from(openadr::model::time::FiniteDuration) -> Self
+impl core::convert::TryFrom<openadr::model::time::Duration> for openadr::model::time::FiniteDuration
+pub type openadr::model::time::FiniteDuration::Error = openadr::model::time::TimeError
+pub fn openadr::model::time::FiniteDuration::try_from(openadr::model::time::Duration) -> core::result::Result<Self, Self::Error>
 impl core::default::Default for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::default() -> Self
 impl core::fmt::Debug for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for openadr::model::time::Duration
 pub fn openadr::model::time::Duration::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::marker::StructuralPartialEq for openadr::model::time::Duration
 impl core::str::traits::FromStr for openadr::model::time::Duration
 pub type openadr::model::time::Duration::Err = openadr::model::time::TimeError
 pub fn openadr::model::time::Duration::from_str(&str) -> core::result::Result<Self, Self::Err>
@@ -5797,7 +5981,7 @@ impl core::cmp::PartialEq for openadr::model::time::StartTime
 pub fn openadr::model::time::StartTime::eq(&self, &Self) -> bool
 impl core::cmp::PartialOrd for openadr::model::time::StartTime
 pub fn openadr::model::time::StartTime::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
-impl core::convert::From<jiff::timestamp::Timestamp> for openadr::model::time::StartTime
+impl core::convert::From<openadr::model::time::Timestamp> for openadr::model::time::StartTime
 pub fn openadr::model::time::StartTime::from(openadr::model::time::Timestamp) -> Self
 impl core::fmt::Debug for openadr::model::time::StartTime
 pub fn openadr::model::time::StartTime::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -6781,6 +6965,54 @@ impl core::marker::Unpin for openadr::core::timeline::Timeline
 impl core::marker::UnsafeUnpin for openadr::core::timeline::Timeline
 impl core::panic::unwind_safe::RefUnwindSafe for openadr::core::timeline::Timeline
 impl core::panic::unwind_safe::UnwindSafe for openadr::core::timeline::Timeline
+pub struct openadr::prelude::Timestamp(_)
+impl openadr::model::time::Timestamp
+pub const openadr::model::time::Timestamp::MAX: Self
+pub const openadr::model::time::Timestamp::MIN: Self
+pub const openadr::model::time::Timestamp::UNIX_EPOCH: Self
+pub fn openadr::model::time::Timestamp::as_nanosecond(self) -> i128
+pub fn openadr::model::time::Timestamp::as_second(self) -> i64
+pub fn openadr::model::time::Timestamp::checked_add(self, core::time::Duration) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::checked_add_seconds(self, i64) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::checked_sub(self, core::time::Duration) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::from_nanosecond(i128) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::from_second(i64) -> core::result::Result<Self, openadr::model::time::TimeError>
+pub fn openadr::model::time::Timestamp::now() -> Self
+impl core::clone::Clone for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::clone(&self) -> Self
+impl core::cmp::Eq for openadr::model::time::Timestamp
+impl core::cmp::Ord for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::cmp(&self, &Self) -> core::cmp::Ordering
+impl core::cmp::PartialEq for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::eq(&self, &Self) -> bool
+impl core::cmp::PartialOrd for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::partial_cmp(&self, &Self) -> core::option::Option<core::cmp::Ordering>
+impl core::convert::From<openadr::model::time::Timestamp> for openadr::model::time::StartTime
+pub fn openadr::model::time::StartTime::from(openadr::model::time::Timestamp) -> Self
+impl core::fmt::Debug for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::hash::Hash for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::hash<__H: core::hash::Hasher>(&self, &mut __H)
+impl core::marker::Copy for openadr::model::time::Timestamp
+impl core::marker::StructuralPartialEq for openadr::model::time::Timestamp
+impl core::str::traits::FromStr for openadr::model::time::Timestamp
+pub type openadr::model::time::Timestamp::Err = openadr::model::time::TimeError
+pub fn openadr::model::time::Timestamp::from_str(&str) -> core::result::Result<Self, Self::Err>
+impl serde_core::ser::Serialize for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::serialize<__S>(&self, __S) -> core::result::Result<<__S as serde_core::ser::Serializer>::Ok, <__S as serde_core::ser::Serializer>::Error> where __S: serde_core::ser::Serializer
+impl<'de> serde_core::de::Deserialize<'de> for openadr::model::time::Timestamp
+pub fn openadr::model::time::Timestamp::deserialize<__D>(__D) -> core::result::Result<Self, <__D as serde_core::de::Deserializer>::Error> where __D: serde_core::de::Deserializer<'de>
+impl core::marker::Forget for openadr::model::time::Timestamp
+impl core::marker::Freeze for openadr::model::time::Timestamp
+impl core::marker::Move for openadr::model::time::Timestamp
+impl core::marker::Send for openadr::model::time::Timestamp
+impl core::marker::Sync for openadr::model::time::Timestamp
+impl core::marker::Unpin for openadr::model::time::Timestamp
+impl core::marker::UnsafeUnpin for openadr::model::time::Timestamp
+impl core::panic::unwind_safe::RefUnwindSafe for openadr::model::time::Timestamp
+impl core::panic::unwind_safe::UnwindSafe for openadr::model::time::Timestamp
 pub struct openadr::prelude::ValuesMap
 pub openadr::prelude::ValuesMap::value_type: openadr::model::values::PayloadType
 pub openadr::prelude::ValuesMap::values: alloc::vec::Vec<openadr::model::values::Value>
@@ -6889,7 +7121,6 @@ impl openadr::core::Clock for openadr::core::FixedClock
 pub fn openadr::core::FixedClock::now(&self) -> openadr::model::time::Timestamp
 impl openadr::core::Clock for openadr::core::SystemClock
 pub fn openadr::core::SystemClock::now(&self) -> openadr::model::time::Timestamp
-pub type openadr::prelude::Timestamp = jiff::timestamp::Timestamp
 pub mod openadr::schema
 pub enum openadr::schema::PayloadGroup
 pub openadr::schema::PayloadGroup::Event

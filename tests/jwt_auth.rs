@@ -50,7 +50,7 @@ fn jwk(kid: &str, extra: Value) -> Value {
 }
 
 fn now() -> i64 {
-    jiff::Timestamp::now().as_second()
+    openadr::model::Timestamp::now().as_second()
 }
 
 /// PKCS#8 DER from a PEM.

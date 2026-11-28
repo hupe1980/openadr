@@ -1932,7 +1932,7 @@ impl Storage for SqliteStorage {
         owner: &str,
     ) -> Result<Vec<Queued>, StorageError> {
         let lease_until = now
-            .checked_add(jiff::Span::new().seconds(lease.as_secs() as i64))
+            .checked_add(core::time::Duration::from_secs(lease.as_secs()))
             .unwrap_or(now);
 
         // Claim and read back in one transaction, so two dispatchers cannot take the same rows.

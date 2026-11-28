@@ -428,7 +428,7 @@ async fn the_payload_is_signed_and_a_receiver_can_verify_it() {
 
     // And a replay of the same bytes an hour later does not.
     let hour_later = sent_at
-        .checked_add(jiff::Span::new().hours(1))
+        .checked_add(core::time::Duration::from_hours(1))
         .expect("in range");
     assert!(matches!(
         Signature::parse(signature).unwrap().verify(

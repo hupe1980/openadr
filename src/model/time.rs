@@ -1,21 +1,96 @@
-//! Time, durations, and the two magic values the specification hides inside them.
+//! RFC 3339 timestamps and ISO 8601 durations for OpenADR schedules.
 //!
-//! OpenADR overloads ordinary RFC 3339 / ISO 8601 fields with sentinels:
-//!
-//! * `intervalPeriod.start` of `0001-01-01` or `0001-01-01T00:00:00` means **now** — a "do it now"
-//!   event whose first interval began before the client read it (User Guide §7.3).
-//! * `duration` of `P9999Y` means **forever** — "as agreed to by communicating parties" in ISO 8601
-//!   parlance (User Guide §7.3).
-//!
-//! Both are represented as explicit enum variants and are matched *before* delegating to a
-//! date-time library, so the meaning of a schedule never depends on a parser's range limits.
+//! The User Guide (§7.3) defines `0001-01-01` as [`StartTime::Now`] for an
+//! interval start and `P9999Y` as [`Duration::Forever`] for a duration.
 
 use crate::std_shim::{String, ToString};
 use core::{fmt, str::FromStr};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Unexpected};
 
 /// An instant on the wire, RFC 3339 with an offset.
-pub type Timestamp = jiff::Timestamp;
+///
+/// Parsing accepts an offset and formatting emits UTC. Use Unix nanoseconds to
+/// exchange an instant with another time library without losing precision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Timestamp(pub(crate) jiff::Timestamp);
+
+impl Timestamp {
+    /// The earliest representable instant.
+    pub const MIN: Self = Self(jiff::Timestamp::MIN);
+    /// The latest representable instant.
+    pub const MAX: Self = Self(jiff::Timestamp::MAX);
+    /// 1970-01-01T00:00:00Z.
+    pub const UNIX_EPOCH: Self = Self(jiff::Timestamp::UNIX_EPOCH);
+
+    /// Read the system clock.
+    #[cfg(feature = "std")]
+    pub fn now() -> Self {
+        Self(jiff::Timestamp::now())
+    }
+
+    /// Construct an instant from signed Unix seconds.
+    pub fn from_second(seconds: i64) -> Result<Self, TimeError> {
+        jiff::Timestamp::from_second(seconds)
+            .map(Self)
+            .map_err(out_of_range)
+    }
+
+    /// Construct an instant from signed Unix nanoseconds.
+    pub fn from_nanosecond(nanoseconds: i128) -> Result<Self, TimeError> {
+        jiff::Timestamp::from_nanosecond(nanoseconds)
+            .map(Self)
+            .map_err(out_of_range)
+    }
+
+    /// Whole seconds since the Unix epoch, truncated toward zero.
+    pub fn as_second(self) -> i64 {
+        self.0.as_second()
+    }
+
+    /// Nanoseconds since the Unix epoch.
+    pub fn as_nanosecond(self) -> i128 {
+        self.0.as_nanosecond()
+    }
+
+    /// Advance by an elapsed duration. For calendar units use [`Duration::checked_add_to`].
+    pub fn checked_add(self, elapsed: core::time::Duration) -> Result<Self, TimeError> {
+        self.0.checked_add(elapsed).map(Self).map_err(out_of_range)
+    }
+
+    /// Shift an instant by a signed number of whole seconds.
+    pub fn checked_add_seconds(self, seconds: i64) -> Result<Self, TimeError> {
+        self.0
+            .checked_add(jiff::SignedDuration::from_secs(seconds))
+            .map(Self)
+            .map_err(out_of_range)
+    }
+
+    /// Go back by an elapsed duration.
+    pub fn checked_sub(self, elapsed: core::time::Duration) -> Result<Self, TimeError> {
+        self.0.checked_sub(elapsed).map(Self).map_err(out_of_range)
+    }
+}
+
+fn out_of_range(error: jiff::Error) -> TimeError {
+    TimeError::OutOfRange(error.to_string())
+}
+
+impl fmt::Display for Timestamp {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl FromStr for Timestamp {
+    type Err = TimeError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        text.parse()
+            .map(Self)
+            .map_err(|_| TimeError::Timestamp(text.to_string()))
+    }
+}
 
 /// The sentinel start value meaning "now", in the two forms the User Guide allows.
 const NOW_SENTINELS: &[&str] = &[
@@ -32,18 +107,7 @@ const NOW_CANONICAL: &str = "0001-01-01T00:00:00Z";
 /// Canonical rendering of the "forever" sentinel when we serialize.
 const FOREVER: &str = "P9999Y";
 
-/// Year count at or above which a duration means "forever" rather than a span.
-///
-/// The specification writes the sentinel as the literal `P9999Y`, and this crate emits exactly
-/// that. Recognising it is a different question from writing it: a peer that normalises durations
-/// sends `P9999Y0M0DT0H0M0S`, which is the same value written differently and which a literal
-/// string comparison does not recognise.
-///
-/// That is not hypothetical: a deployed VTN returns exactly that string, and read as an ordinary
-/// span it is 9999 years — which, added to any instant after the epoch, leaves the representable
-/// range. The expansion then fails, and a VEN's timeline records the event as *skipped*: the
-/// perpetual price signal simply vanishes, silently, at the one implementation boundary that
-/// matters.
+/// Recognize normalized forms of the forever sentinel, such as `P9999Y0M0DT0H0M0S`.
 const FOREVER_YEARS: i64 = 9999;
 
 /// Errors from parsing a spec time value.
@@ -55,8 +119,11 @@ pub enum TimeError {
     /// Not a valid ISO 8601 duration, or one the schema's pattern forbids.
     #[error("invalid ISO 8601 duration: {0}")]
     Duration(String),
-    /// A duration that is syntactically fine but cannot be applied to this instant.
-    #[error("duration cannot be applied at this instant: {0}")]
+    /// The caller requested a finite duration for the "forever" sentinel.
+    #[error("expected a finite duration, received P9999Y")]
+    ExpectedFinite,
+    /// A time value or the result of arithmetic exceeds the representable range.
+    #[error("time value out of range: {0}")]
     OutOfRange(String),
 }
 
@@ -150,25 +217,93 @@ impl<'de> Deserialize<'de> for StartTime {
 /// Equality is *fieldwise*: `PT60M` and `PT1H` are different durations here, because they render
 /// differently on the wire and a round trip must be lossless. Use [`Duration::as_secs`] to compare
 /// lengths.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Duration {
     /// `P9999Y` — unbounded.
     Forever,
     /// A bounded span.
-    Finite(jiff::Span),
+    Finite(FiniteDuration),
+}
+
+/// A bounded OpenADR duration. Calendar units retain their meaning until
+/// [`checked_add_to`](Self::checked_add_to) applies them at a UTC instant.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[serde(try_from = "Duration", into = "Duration")]
+pub struct FiniteDuration(jiff::Span);
+
+impl From<FiniteDuration> for Duration {
+    fn from(span: FiniteDuration) -> Self {
+        Self::Finite(span)
+    }
+}
+
+impl TryFrom<Duration> for FiniteDuration {
+    type Error = TimeError;
+
+    fn try_from(duration: Duration) -> Result<Self, Self::Error> {
+        match duration {
+            Duration::Finite(span) => Ok(span),
+            Duration::Forever => Err(TimeError::ExpectedFinite),
+        }
+    }
+}
+
+impl FromStr for FiniteDuration {
+    type Err = TimeError;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        text.parse::<Duration>()?.try_into()
+    }
+}
+
+impl PartialEq for FiniteDuration {
+    fn eq(&self, other: &Self) -> bool {
+        self.0.fieldwise() == other.0.fieldwise()
+    }
+}
+
+impl Eq for FiniteDuration {}
+
+impl FiniteDuration {
+    /// Apply the span in the UTC calendar.
+    pub fn checked_add_to(&self, at: Timestamp) -> Result<Timestamp, TimeError> {
+        at.0.to_zoned_datetime(jiff::tz::TimeZone::UTC)
+            .checked_add(self.0)
+            .map(|zoned| Timestamp(zoned.timestamp()))
+            .map_err(out_of_range)
+    }
+
+    /// Length in nanoseconds, if the span contains no years or months.
+    pub fn as_nanos(&self) -> Option<i128> {
+        let span = self.0;
+        if span.get_years() != 0 || span.get_months() != 0 {
+            return None;
+        }
+        let whole_secs = i128::from(span.get_weeks()) * 7 * 86_400
+            + i128::from(span.get_days()) * 86_400
+            + i128::from(span.get_hours()) * 3_600
+            + i128::from(span.get_minutes()) * 60
+            + i128::from(span.get_seconds());
+        Some(
+            whole_secs * 1_000_000_000
+                + i128::from(span.get_milliseconds()) * 1_000_000
+                + i128::from(span.get_microseconds()) * 1_000
+                + i128::from(span.get_nanoseconds()),
+        )
+    }
 }
 
 impl Duration {
     /// The schema default, `PT0S`.
     pub fn zero() -> Self {
-        Duration::Finite(jiff::Span::new())
+        Duration::Finite(FiniteDuration(jiff::Span::new()))
     }
 
     /// A span of whole seconds.
     pub fn from_secs(secs: i64) -> Result<Self, TimeError> {
         jiff::Span::new()
             .try_seconds(secs)
-            .map(Duration::Finite)
+            .map(|span| Duration::Finite(FiniteDuration(span)))
             .map_err(|e| TimeError::Duration(e.to_string()))
     }
 
@@ -189,7 +324,7 @@ impl Duration {
                 .try_nanoseconds(rem)
                 .map_err(|e| TimeError::Duration(e.to_string()))?;
         }
-        Ok(Duration::Finite(span))
+        Ok(Duration::Finite(FiniteDuration(span)))
     }
 
     /// Whether this is the unbounded sentinel.
@@ -206,7 +341,7 @@ impl Duration {
     pub fn is_negative(&self) -> bool {
         match self {
             Duration::Forever => false,
-            Duration::Finite(s) => s.is_negative(),
+            Duration::Finite(s) => s.0.is_negative(),
         }
     }
 
@@ -214,12 +349,12 @@ impl Duration {
     pub fn is_zero(&self) -> bool {
         match self {
             Duration::Forever => false,
-            Duration::Finite(s) => s.is_zero(),
+            Duration::Finite(s) => s.0.is_zero(),
         }
     }
 
     /// The underlying span, if bounded.
-    pub fn span(&self) -> Option<&jiff::Span> {
+    pub fn span(&self) -> Option<&FiniteDuration> {
         match self {
             Duration::Forever => None,
             Duration::Finite(s) => Some(s),
@@ -232,57 +367,22 @@ impl Duration {
     /// means in its context. Calendar units (`Y`, `M`, `W`, `D`) are resolved against UTC, so a
     /// month added to 31 January lands on 28/29 February rather than overflowing.
     pub fn checked_add_to(&self, at: Timestamp) -> Result<Option<Timestamp>, TimeError> {
-        let Some(span) = self.span() else {
-            return Ok(None);
-        };
-        at.to_zoned(jiff::tz::TimeZone::UTC)
-            .checked_add(*span)
-            .map(|z| Some(z.timestamp()))
-            .map_err(|e| TimeError::OutOfRange(e.to_string()))
+        self.span().map(|span| span.checked_add_to(at)).transpose()
     }
 
-    /// Length in seconds, if bounded and free of calendar units.
+    /// Length in seconds, if bounded and free of years and months.
     ///
-    /// Calendar units have no fixed length, so this returns `None` for them; use
-    /// [`Duration::checked_add_to`] when an anchor instant is available. Sub-second components are
-    /// included and truncated towards zero.
+    /// Weeks and days use 24-hour UTC days. Use [`Duration::checked_add_to`] to
+    /// resolve years and months at an anchor instant. Fractions truncate towards zero.
     pub fn as_secs(&self) -> Option<i64> {
         i64::try_from(self.as_nanos()? / 1_000_000_000).ok()
     }
 
-    /// Length in nanoseconds, if bounded and free of calendar units.
+    /// Length in nanoseconds, if bounded and free of years and months.
     pub fn as_nanos(&self) -> Option<i128> {
-        let span = self.span()?;
-        if span.get_years() != 0 || span.get_months() != 0 {
-            return None;
-        }
-        let whole_secs = i128::from(span.get_weeks()) * 7 * 86_400
-            + i128::from(span.get_days()) * 86_400
-            + i128::from(span.get_hours()) * 3_600
-            + i128::from(span.get_minutes()) * 60
-            + i128::from(span.get_seconds());
-        Some(
-            whole_secs * 1_000_000_000
-                + i128::from(span.get_milliseconds()) * 1_000_000
-                + i128::from(span.get_microseconds()) * 1_000
-                + i128::from(span.get_nanoseconds()),
-        )
+        self.span()?.as_nanos()
     }
 }
-
-impl PartialEq for Duration {
-    fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
-            (Duration::Forever, Duration::Forever) => true,
-            // `jiff::Span` has no `PartialEq` on purpose: two spans can denote the same length with
-            // different units. Comparing fieldwise is what a wire-format round trip needs.
-            (Duration::Finite(a), Duration::Finite(b)) => a.fieldwise() == b.fieldwise(),
-            _ => false,
-        }
-    }
-}
-
-impl Eq for Duration {}
 
 impl Default for Duration {
     fn default() -> Self {
@@ -304,13 +404,10 @@ impl FromStr for Duration {
         let span = trimmed
             .parse::<jiff::Span>()
             .map_err(|_| TimeError::Duration(trimmed.to_string()))?;
-        // The sentinel by *value*, not only by spelling. See `FOREVER_YEARS`: a peer that
-        // normalises `P9999Y` sends the same duration written out in full, and reading that as an
-        // ordinary span makes a perpetual event disappear rather than never end.
         if i64::from(span.get_years()) >= FOREVER_YEARS {
             return Ok(Duration::Forever);
         }
-        Ok(Duration::Finite(span))
+        Ok(Duration::Finite(FiniteDuration(span)))
     }
 }
 
@@ -318,16 +415,18 @@ impl fmt::Display for Duration {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Duration::Forever => f.write_str(FOREVER),
-            Duration::Finite(span) => {
-                if span.is_zero() {
-                    // The schema's default is exactly this string.
-                    f.write_str("PT0S")
-                } else {
-                    // `{}` is jiff's ISO 8601 rendering; `{:#}` would emit its "friendly" format
-                    // ("3600s"), which is not a legal `duration` on the wire.
-                    write!(f, "{span}")
-                }
-            }
+            Duration::Finite(span) => fmt::Display::fmt(span, f),
+        }
+    }
+}
+
+impl fmt::Display for FiniteDuration {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.0.is_zero() {
+            f.write_str("PT0S")
+        } else {
+            // Always use ISO 8601, even when the caller requests alternate formatting.
+            write!(f, "{}", self.0)
         }
     }
 }
@@ -349,14 +448,7 @@ impl<'de> Deserialize<'de> for Duration {
 
 /// The `duration` pattern, verbatim from `components/schemas/duration` in `openadr3.yaml`.
 ///
-/// `is_schema_duration` — the private byte-level state machine [`Duration`]'s parser uses — implements
-/// exactly this, and the two are held together from both ends: `cargo xtask check-model` fails if
-/// the Alliance changes the pattern and this constant does not follow, and a property test asserts
-/// that the state machine and this regex agree on every input it can generate.
-///
-/// It is deliberately stricter than ISO 8601 proper — no fractional hours or minutes, and days and
-/// weeks mutually exclusive — which is why the parser checks it directly rather than accepting
-/// whatever `jiff` allows.
+/// OpenADR permits fractional seconds and mutually exclusive day and week components.
 pub const SCHEMA_DURATION_PATTERN: &str = r"^(-?)P(?=\d|T\d)(?:(\d+)Y)?(?:(\d+)M)?(?:(\d+)([DW]))?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+(?:\.\d+)?)S)?)?$";
 
 /// Does this string match the specification's `duration` pattern?
@@ -513,6 +605,35 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn finite_duration_uses_the_wire_grammar_and_excludes_forever() {
+        let month: FiniteDuration = serde_json::from_str(r#""P1M""#).unwrap();
+        assert_eq!(serde_json::to_string(&month).unwrap(), r#""P1M""#);
+        assert_eq!(
+            "P9999Y0M".parse::<FiniteDuration>(),
+            Err(TimeError::ExpectedFinite)
+        );
+        assert!(serde_json::from_str::<FiniteDuration>(r#""P9999Y""#).is_err());
+        assert!("1h".parse::<FiniteDuration>().is_err());
+    }
+
+    #[test]
+    fn timestamp_preserves_offset_and_fraction_as_a_utc_instant() {
+        let at: Timestamp =
+            serde_json::from_str(r#""1970-01-01T00:59:59.999999999+01:00""#).unwrap();
+        assert_eq!(at.as_nanosecond(), -1);
+        assert_eq!(Timestamp::from_nanosecond(-1).unwrap(), at);
+        assert_eq!(
+            serde_json::to_string(&at).unwrap(),
+            r#""1969-12-31T23:59:59.999999999Z""#
+        );
+        let tick = core::time::Duration::from_nanos(1);
+        assert_eq!(at.checked_add(tick).unwrap(), Timestamp::UNIX_EPOCH);
+        assert_eq!(Timestamp::UNIX_EPOCH.checked_sub(tick).unwrap(), at);
+        assert!(Timestamp::MAX.checked_add(tick).is_err());
+        assert!(Timestamp::MIN.checked_sub(tick).is_err());
+    }
 
     fn ts(s: &str) -> Timestamp {
         s.parse().unwrap()

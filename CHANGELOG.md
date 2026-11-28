@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.8.0] — 2026-11-28
+
+- **Breaking:** `model::Timestamp`, `Duration::Finite` and `Duration::span` use OpenADR types.
+  Jiff 1 is internal. Use `Timestamp::{as_nanosecond, from_nanosecond}` to exchange instants
+  with other libraries and `Duration::checked_add_to` for calendar arithmetic.
+
 ## [0.7.0] — 2026-11-24
 
 - Fractional payloads and curve coordinates decode when another dependency enables
@@ -334,6 +340,7 @@ Initial implementation: the wire model, the payload schema, the domain core, the
 three storage backends, the typed client, the VEN runtime, webhook and MQTT transports, mDNS
 discovery, TLS, and the black-box conformance kit.
 
+[0.8.0]: https://github.com/hupe1980/openadr/releases/tag/v0.8.0
 [0.7.0]: https://github.com/hupe1980/openadr/releases/tag/v0.7.0
 [0.6.0]: https://github.com/hupe1980/openadr/releases/tag/v0.6.0
 [0.5.1]: https://github.com/hupe1980/openadr/releases/tag/v0.5.1

@@ -51,8 +51,8 @@ command that describes them. CI holds this quickstart to under 60 seconds.
   each citing the sentence it tests; 51 are proven able to fail against deliberately broken VTNs. It
   writes an HTML report and a badge, runs in your CI as a GitHub Action, and runs weekly here
   against another implementation's current release.
-- **Exact values.** Prices are `Decimal` (`0.1 + 0.2 == 0.3`); `P9999Y` and `0001-01-01` are enum
-  variants, not strings; a looping tariff is indexed, not cloned.
+- **Exact values and schedules.** Prices use decimal arithmetic. `Timestamp` preserves nanoseconds,
+  and `StartTime::Now` and `Duration::Forever` represent the protocol’s scheduling sentinels.
 - **Polling is the normal case**, with `ETag` on every read. Push over webhooks and MQTT wakes the
   VEN loop, which re-reads from the VTN: a broker can cost a VEN latency, never correctness.
 - **Microcontroller to cloud.** The wire model, payload schema and domain core are `no_std` + alloc
@@ -77,11 +77,7 @@ Features: `std` and `tls-ring` (default) · `client` · `ven` · `conformance` �
 `internal-auth` · `external-auth` · `webhook` · `webhook-signature` · `mqtt` · `mdns` · `tls`. CI
 builds each feature separately and tests the all-features configuration. See [Embedding and `no_std`](https://hupe1980.github.io/openadr/docs/embedding/).
 
-Fractional payloads such as a 7.56 kW import cap and curve points decode in the same workspace
-as crates that enable `serde_json/arbitrary_precision`. See [numeric precision](https://hupe1980.github.io/openadr/docs/spec-notes/#numeric-precision).
-
-Embedding a VEN in a service that uses AWS-LC? Disable the default features, enable `ven`,
-and install your rustls provider at startup. See [TLS provider selection](https://hupe1980.github.io/openadr/docs/client/#selecting-a-tls-provider).
+For a VEN using AWS-LC, see [TLS provider selection](https://hupe1980.github.io/openadr/docs/client/#selecting-a-tls-provider).
 
 ## A durable VTN
 

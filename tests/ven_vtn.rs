@@ -41,9 +41,9 @@ impl MovableClock {
         Arc::new(Self(Mutex::new(t.parse().unwrap())))
     }
 
-    fn advance(&self, span: jiff::Span) {
+    fn advance(&self, elapsed: std::time::Duration) {
         let mut now = self.0.lock().unwrap();
-        *now = now.checked_add(span).unwrap();
+        *now = now.checked_add(elapsed).unwrap();
     }
 }
 
@@ -895,7 +895,7 @@ async fn a_schedule_that_never_changes_is_still_in_force_two_days_later() {
 
     // Three days of quiet polling. Every one of them is a 304.
     for _ in 0..3 {
-        clock.advance(jiff::Span::new().hours(24));
+        clock.advance(core::time::Duration::from_hours(24));
         let outcome = runtime.sync().await.unwrap();
         assert!(
             outcome.is_quiet(),
@@ -950,7 +950,7 @@ async fn a_do_it_now_event_does_not_slide_forward_on_every_rebuild() {
     // Half an hour later something *else* changes — a second event, in a second programme, which
     // has nothing to do with this one. That is what rebuilds the timelines, and it is why the slide
     // never needed a long-running VEN to bite: one unrelated write is enough.
-    clock.advance(jiff::Span::new().minutes(30));
+    clock.advance(core::time::Duration::from_mins(30));
     let other = fixture.program("unrelated").await;
     fixture
         .bl(
@@ -977,7 +977,7 @@ async fn a_do_it_now_event_does_not_slide_forward_on_every_rebuild() {
     );
 
     // And an hour and a bit after it arrived, it is over.
-    clock.advance(jiff::Span::new().minutes(45));
+    clock.advance(core::time::Duration::from_mins(45));
     runtime.sync().await.unwrap();
     assert!(
         runtime.active_at(clock.now()).is_none(),
